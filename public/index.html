@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Healthspan — Fitbit Biological Age Dashboard</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-dot"></div>
+        <div>
+          <h1>HEALTHSPAN</h1>
+          <span class="subtitle">Fitbit Biological Age &amp; Pace of Aging</span>
+        </div>
+      </div>
+
+      <div class="topbar-actions">
+        <span id="sourceBadge" class="badge badge-preview">Sample Preview</span>
+        <div class="inline-field">
+          <label for="chronoAgeInput">Age</label>
+          <input id="chronoAgeInput" type="number" min="18" max="100" step="1" value="33" />
+        </div>
+        <div class="inline-field">
+          <label for="leanPctInput">Lean %</label>
+          <input id="leanPctInput" type="number" min="40" max="95" step="0.5" placeholder="Auto" />
+        </div>
+        <button id="saveProfileBtn" class="btn btn-ghost">Apply</button>
+        <button id="syncBtn" class="btn btn-secondary hidden">Sync Fitbit</button>
+        <button id="connectBtn" class="btn btn-primary">Connect Fitbit</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero-grid">
+        <!-- Biological Age Card -->
+        <div class="card hero-card">
+          <div class="card-header">
+            <div>
+              <span class="eyebrow">LONG-TERM BASELINE (UP TO 6 MONTHS)</span>
+              <h2>Biological Age</h2>
+            </div>
+            <span id="ageDeltaPill" class="delta-pill delta-good">-3.8 yrs</span>
+          </div>
+
+          <div class="bio-hero-body">
+            <div class="gauge-wrap">
+              <svg viewBox="0 0 220 220" class="ring-svg">
+                <circle cx="110" cy="110" r="92" class="ring-bg" />
+                <circle id="bioRingProgress" cx="110" cy="110" r="92" class="ring-fg"
+                        stroke-dasharray="578" stroke-dashoffset="140" />
+              </svg>
+              <div class="gauge-center">
+                <div id="bioAgeValue" class="hero-number">--</div>
+                <div class="hero-sub">vs <span id="chronoAgeLabel">33</span> yrs</div>
+              </div>
+            </div>
+
+            <div class="trend-wrap">
+              <div class="trend-title">6-Month Biological Age Trajectory</div>
+              <svg id="bioTrendChart" viewBox="0 0 360 140" class="trend-svg"></svg>
+              <div class="trend-legend">
+                <span><i class="dot dot-emerald"></i> Biological Age</span>
+                <span><i class="dot dot-muted"></i> Chronological Age</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Pace of Aging Card -->
+        <div class="card hero-card">
+          <div class="card-header">
+            <div>
+              <span class="eyebrow">RECENT TRAJECTORY (LAST 30 DAYS)</span>
+              <h2>Pace of Aging</h2>
+            </div>
+            <span id="paceStatusPill" class="delta-pill delta-good">Slowing</span>
+          </div>
+
+          <div class="pace-hero-body">
+            <div class="speedo-wrap">
+              <svg viewBox="0 0 260 150" class="speedo-svg">
+                <path d="M 30 130 A 100 100 0 0 1 230 130" class="speedo-bg" />
+                <path id="paceArcFg" d="M 30 130 A 100 100 0 0 1 230 130" class="speedo-fg"
+                      stroke-dasharray="314" stroke-dashoffset="157" />
+              </svg>
+              <div class="speedo-center">
+                <div id="paceValue" class="hero-number">0.8x</div>
+                <div class="hero-sub">1.0x = normal aging</div>
+              </div>
+            </div>
+
+            <div class="pace-summary">
+              <div class="summary-stat">
+                <span class="stat-label">Healthspan Score</span>
+                <span id="overallScoreValue" class="stat-val">-- / 100</span>
+              </div>
+              <div class="summary-stat">
+                <span class="stat-label">Active Pillars</span>
+                <span id="activePillarsValue" class="stat-val">9 / 9</span>
+              </div>
+              <p id="paceDescription" class="pace-note">
+                Your last 30 days of sleep, cardiovascular load, and recovery are slowing your physiological aging rate.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 9 Pillars Section -->
+      <section class="pillars-section">
+        <div class="section-header">
+          <div>
+            <h2>The 9 Healthspan Pillars</h2>
+            <p>Each metric contributes years to or from your Biological Age based on your 6-month baseline and 30-day trend.</p>
+          </div>
+          <div class="filter-pills" id="categoryFilters">
+            <button class="filter-btn active" data-cat="All">All</button>
+            <button class="filter-btn" data-cat="Sleep">Sleep</button>
+            <button class="filter-btn" data-cat="Cardiorespiratory">Cardiorespiratory</button>
+            <button class="filter-btn" data-cat="Cardio Load">Cardio Load</button>
+            <button class="filter-btn" data-cat="Activity">Activity</button>
+            <button class="filter-btn" data-cat="Musculoskeletal">Strength</button>
+            <button class="filter-btn" data-cat="Body Composition">Body Comp</button>
+          </div>
+        </div>
+
+        <div id="pillarsGrid" class="pillars-grid"></div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Connect Fitbit Modal -->
+  <div id="connectModal" class="modal-backdrop hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>Connect Your Google Health Account</h3>
+        <button id="closeModalBtn" class="icon-btn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <ol class="setup-steps">
+          <li>Follow <a href="https://developers.google.com/health/setup" target="_blank" rel="noopener">developers.google.com/health/setup</a>: in <a href="https://console.cloud.google.com/" target="_blank" rel="noopener">Google Cloud Console</a>, create a project and enable <strong>Google Health API</strong>.</li>
+          <li>In <strong>OAuth consent screen</strong> (External, Testing mode), add yourself as a <strong>Test user</strong> and add the <code>googlehealth</code> read-only scopes (<code>activity_and_fitness</code>, <code>sleep</code>, <code>health_metrics_and_measurements</code>, <code>profile</code>).</li>
+          <li>In <strong>Credentials &rarr; Create OAuth client ID</strong>, choose <code>Web application</code> and add Authorized redirect URI: <code id="callbackUriHint">http://localhost:8765/callback</code>.</li>
+          <li>Paste your Google <strong>Client ID</strong> and <strong>Client Secret</strong> below and click <strong>Authorize with Google Health</strong>.</li>
+        </ol>
+
+        <div class="form-group">
+          <label for="clientIdInput">Google OAuth Client ID</label>
+          <input id="clientIdInput" type="text" placeholder="e.g. 123456789-abc.apps.googleusercontent.com" />
+        </div>
+        <div class="form-group">
+          <label for="clientSecretInput">Client Secret <span class="muted">(required for Web application credentials)</span></label>
+          <input id="clientSecretInput" type="password" placeholder="GOCSPX-..." />
+        </div>
+        <div id="modalError" class="error-box hidden"></div>
+      </div>
+      <div class="modal-footer">
+        <button id="disconnectBtn" class="btn btn-danger hidden">Disconnect</button>
+        <button id="authorizeBtn" class="btn btn-primary">Authorize with Google Health</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

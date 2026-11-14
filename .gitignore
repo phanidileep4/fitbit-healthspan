@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+.fitbit_state.json
+.vercel/
+.DS_Store
