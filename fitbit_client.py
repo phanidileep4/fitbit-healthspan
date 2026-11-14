@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import secrets
 import time
 import urllib.error
@@ -29,10 +30,18 @@ SCOPES = " ".join([
 ])
 
 
+def _effective_credentials(st: Dict[str, Any]) -> Tuple[str, str]:
+    cid = (st.get("client_id") or os.environ.get("GOOGLE_CLIENT_ID", "")).strip()
+    csec = (st.get("client_secret") or os.environ.get("GOOGLE_CLIENT_SECRET", "")).strip()
+    return cid, csec
+
+
 def get_config(st: Dict[str, Any]) -> Dict[str, Any]:
+    env_cid = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
     return {
         "client_id": st.get("client_id", ""),
         "has_client_secret": bool(st.get("client_secret")),
+        "has_server_credentials": bool(env_cid),
         "connected": bool(st.get("tokens", {}).get("access_token")),
         "chronological_age": st.get("chronological_age", 33.0),
         "manual_lean_pct": st.get("manual_lean_pct"),
@@ -67,9 +76,14 @@ def disconnect(st: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def build_auth_url(st: Dict[str, Any], client_id: str, client_secret: str, redirect_uri: str) -> Tuple[str, Dict[str, Any]]:
-    st["client_id"] = client_id.strip()
-    if client_secret:
+    if client_id.strip():
+        st["client_id"] = client_id.strip()
+    if client_secret.strip():
         st["client_secret"] = client_secret.strip()
+
+    eff_cid, _ = _effective_credentials(st)
+    if not eff_cid:
+        raise RuntimeError("Google OAuth Client ID is not configured.")
 
     code_verifier = secrets.token_urlsafe(64)
     digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
@@ -83,7 +97,7 @@ def build_auth_url(st: Dict[str, Any], client_id: str, client_secret: str, redir
     }
 
     params = {
-        "client_id": st["client_id"],
+        "client_id": eff_cid,
         "redirect_uri": redirect_uri,
         "response_type": "code",
         "scope": SCOPES,
@@ -113,8 +127,7 @@ def exchange_code(st: Dict[str, Any], code: str, returned_state: str, fallback_r
     if not pkce or pkce.get("state") != returned_state:
         raise RuntimeError("OAuth state mismatch. Please restart the Google Health connection flow.")
 
-    client_id = st.get("client_id", "")
-    client_secret = st.get("client_secret", "")
+    client_id, client_secret = _effective_credentials(st)
     redirect_uri = pkce.get("redirect_uri") or fallback_redirect_uri
     form = {
         "client_id": client_id,
@@ -143,8 +156,7 @@ def _get_valid_access_token(st: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
         raise RuntimeError("Google Health is not connected.")
 
     if time.time() >= tokens.get("expires_at", 0) and tokens.get("refresh_token"):
-        client_id = st.get("client_id", "")
-        client_secret = st.get("client_secret", "")
+        client_id, client_secret = _effective_credentials(st)
         form = {
             "grant_type": "refresh_token",
             "refresh_token": tokens["refresh_token"],

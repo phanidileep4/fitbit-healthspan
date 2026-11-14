@@ -184,11 +184,11 @@ class HealthspanHandler(BaseHTTPRequestHandler):
         if path == "/api/auth/start":
             client_id = (body.get("client_id") or "").strip()
             client_secret = (body.get("client_secret") or "").strip()
-            if not client_id:
-                self._send_json({"error": "Google OAuth Client ID is required."}, status=400)
-                return
-            auth_url, st = fitbit_client.build_auth_url(st, client_id, client_secret, self._redirect_uri())
-            self._send_json({"auth_url": auth_url}, new_state=st)
+            try:
+                auth_url, st = fitbit_client.build_auth_url(st, client_id, client_secret, self._redirect_uri())
+                self._send_json({"auth_url": auth_url}, new_state=st)
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=400)
             return
 
         if path == "/api/sync":

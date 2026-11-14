@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Privacy Policy — Healthspan Dashboard</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="app-shell" style="max-width: 780px;">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-dot"></div>
+        <div>
+          <h1>HEALTHSPAN</h1>
+          <span class="subtitle">Privacy Policy</span>
+        </div>
+      </div>
+      <a href="/" class="btn btn-secondary" style="text-decoration:none;">Back to Dashboard</a>
+    </header>
+
+    <div class="card" style="display:flex; flex-direction:column; gap:16px;">
+      <h2>Privacy Policy</h2>
+      <p style="color:var(--muted);">Effective Date: November 14, 2026</p>
+
+      <h3>1. Data We Access</h3>
+      <p style="color:var(--muted);">
+        When you connect your Google Health / Fitbit account, Healthspan requests read-only access to your activity,
+        sleep, heart rate, VO₂ max, and profile age data strictly to calculate your Biological Age and Pace of Aging dashboard.
+      </p>
+
+      <h3>2. How Your Data Is Stored</h3>
+      <p style="color:var(--muted);">
+        Healthspan is stateless and does <strong>not</strong> store your health metrics or OAuth tokens in any server-side database.
+        Your OAuth session token is stored only in an encrypted/HttpOnly browser cookie, and your computed dashboard
+        summary is cached locally in your browser's <code>localStorage</code>.
+      </p>
+
+      <h3>3. Data Sharing &amp; Deletion</h3>
+      <p style="color:var(--muted);">
+        We never sell, rent, or share your Google Health data with third parties. You can revoke access at any time
+        by clicking <strong>Disconnect</strong> in the dashboard or via your
+        <a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener" style="color:var(--emerald);">Google Account Permissions</a>.
+      </p>
+
+      <h3>4. Google API Services User Data Policy</h3>
+      <p style="color:var(--muted);">
+        Healthspan's use and transfer of information received from Google APIs adheres to the
+        <a href="https://developers.google.com/terms/api-services-user-data-policy" target="_blank" rel="noopener" style="color:var(--emerald);">Google API Services User Data Policy</a>,
+        including the Limited Use requirements.
+      </p>
+    </div>
+  </div>
+</body>
+</html>

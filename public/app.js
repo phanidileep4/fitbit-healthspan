@@ -264,14 +264,14 @@ async function saveProfile() {
   renderDashboard(data);
 }
 
-async function startAuth() {
-  const clientId = $("clientIdInput").value.trim();
-  const clientSecret = $("clientSecretInput").value.trim();
+async function startAuth(useServerCreds = false) {
+  const clientId = useServerCreds ? "" : $("clientIdInput").value.trim();
+  const clientSecret = useServerCreds ? "" : $("clientSecretInput").value.trim();
   const errBox = $("modalError");
-  errBox.classList.add("hidden");
+  if (errBox) errBox.classList.add("hidden");
 
-  if (!clientId) {
-    errBox.textContent = "Please enter your Fitbit OAuth 2.0 Client ID.";
+  if (!useServerCreds && !clientId) {
+    errBox.textContent = "Please enter your Google OAuth Client ID.";
     errBox.classList.remove("hidden");
     return;
   }
@@ -283,8 +283,12 @@ async function startAuth() {
   });
   const data = await res.json();
   if (data.error) {
-    errBox.textContent = data.error;
-    errBox.classList.remove("hidden");
+    if (errBox) {
+      errBox.textContent = data.error;
+      errBox.classList.remove("hidden");
+    } else {
+      alert(data.error);
+    }
     return;
   }
   window.location.href = data.auth_url;
@@ -320,9 +324,16 @@ async function disconnectFitbit() {
 // Event listeners
 $("saveProfileBtn").addEventListener("click", saveProfile);
 $("syncBtn").addEventListener("click", syncNow);
-$("connectBtn").addEventListener("click", () => $("connectModal").classList.remove("hidden"));
+$("connectBtn").addEventListener("click", () => {
+  const cfg = currentDashboard && currentDashboard.config;
+  if (cfg && cfg.has_server_credentials && !cfg.connected) {
+    startAuth(true);
+    return;
+  }
+  $("connectModal").classList.remove("hidden");
+});
 $("closeModalBtn").addEventListener("click", () => $("connectModal").classList.add("hidden"));
-$("authorizeBtn").addEventListener("click", startAuth);
+$("authorizeBtn").addEventListener("click", () => startAuth(false));
 $("disconnectBtn").addEventListener("click", disconnectFitbit);
 
 $("categoryFilters").addEventListener("click", (e) => {
