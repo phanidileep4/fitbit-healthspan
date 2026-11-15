@@ -6,11 +6,13 @@ storage so no database or persistent disk is needed.
 
 from __future__ import annotations
 
-import base64
+import html
+import os
 import json
 import mimetypes
 import urllib.parse
-from http.cookies import SimpleCookie
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from session_codec import COOKIE_NAME, decode_session as _decode_session, encode_session_cookie as _encode_session_cookie
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -19,51 +21,28 @@ import fitbit_client
 import healthspan_engine
 
 PUBLIC_DIR = Path(__file__).parent / "public"
-COOKIE_NAME = "gh_session"
-
-
-def _decode_session(cookie_header: Optional[str]) -> Dict[str, Any]:
-    if not cookie_header:
-        return {}
-    c = SimpleCookie()
-    c.load(cookie_header)
-    if COOKIE_NAME not in c:
-        return {}
-    raw_val = c[COOKIE_NAME].value
-    try:
-        padded = raw_val + "=" * (-len(raw_val) % 4)
-        decoded = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
-        return json.loads(decoded)
-    except Exception:
-        return {}
-
-
-def _encode_session_cookie(st: Dict[str, Any], is_https: bool) -> str:
-    payload = json.dumps(st, separators=(",", ":")).encode("utf-8")
-    b64 = base64.urlsafe_b64encode(payload).rstrip(b"=").decode("ascii")
-    parts = [
-        f"{COOKIE_NAME}={b64}",
-        "Path=/",
-        "HttpOnly",
-        "SameSite=Lax",
-        "Max-Age=2592000",
-    ]
-    if is_https:
-        parts.append("Secure")
-    return "; ".join(parts)
-
-
 class HealthspanHandler(BaseHTTPRequestHandler):
     serve_static: bool = False
 
     def log_message(self, format: str, *args: Any) -> None:
-        print(f"[{self.log_date_time_string()}] {format % args}")
+        # Callback URLs contain authorization codes; never log request query strings.
+        print(f"[{self.log_date_time_string()}] {self.command} {urllib.parse.urlparse(self.path).path}")
 
     def _is_https(self) -> bool:
         proto = self.headers.get("X-Forwarded-Proto", "http")
         return proto.lower() == "https"
 
+    def end_headers(self):
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'")
+        super().end_headers()
+
     def _redirect_uri(self) -> str:
+        configured = os.environ.get("APP_ORIGIN")
+        if configured:
+            return configured.rstrip("/") + "/callback"
         proto = "https" if self._is_https() else "http"
         host = self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or "localhost:8765"
         return f"{proto}://{host}/callback"
@@ -72,12 +51,13 @@ class HealthspanHandler(BaseHTTPRequestHandler):
         return _decode_session(self.headers.get("Cookie"))
 
     def _send_json(self, payload: Dict[str, Any], status: int = 200, new_state: Optional[Dict[str, Any]] = None) -> None:
-        data = json.dumps(payload).encode("utf-8")
+        cookie = _encode_session_cookie(new_state, self._is_https()) if new_state is not None else None
+        data = json.dumps(payload, allow_nan=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
-        if new_state is not None:
-            self.send_header("Set-Cookie", _encode_session_cookie(new_state, self._is_https()))
+        if cookie:
+            self.send_header("Set-Cookie", cookie)
         self.end_headers()
         self.wfile.write(data)
 
@@ -91,10 +71,15 @@ class HealthspanHandler(BaseHTTPRequestHandler):
 
     def _read_json_body(self) -> Dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))
-        if length <= 0:
+        if length < 0 or length > 16384:
+            raise ValueError("Request body is too large.")
+        if length == 0:
             return {}
         raw = self.rfile.read(length).decode("utf-8")
-        return json.loads(raw) if raw else {}
+        value = json.loads(raw) if raw else {}
+        if not isinstance(value, dict):
+            raise ValueError("Expected a JSON object.")
+        return value
 
     def _sample_payload(self, st: Dict[str, Any]) -> Dict[str, Any]:
         cfg = fitbit_client.get_config(st)
@@ -121,7 +106,7 @@ class HealthspanHandler(BaseHTTPRequestHandler):
             if "error" in qs:
                 err = qs.get("error_description", qs["error"])[0]
                 self._send_html(
-                    f"<h2>Google Health Authorization Cancelled</h2><p>{err}</p>"
+                    f"<h2>Google Health Authorization Cancelled</h2><p>{html.escape(err)}</p>"
                     f"<p><a href='/'>Return to Dashboard</a></p>",
                     status=400,
                 )
@@ -131,22 +116,23 @@ class HealthspanHandler(BaseHTTPRequestHandler):
             state_param = qs.get("state", [""])[0]
             try:
                 st = fitbit_client.exchange_code(st, code, state_param, self._redirect_uri())
+                cookie = _encode_session_cookie(st, self._is_https())
                 self.send_response(302)
-                self.send_header("Set-Cookie", _encode_session_cookie(st, self._is_https()))
+                self.send_header("Set-Cookie", cookie)
                 self.send_header("Location", "/?connected=1")
                 self.end_headers()
             except Exception as exc:
                 self._send_html(
-                    f"<h2>Google Health Connection Error</h2><p>{exc}</p>"
+                    f"<h2>Google Health Connection Error</h2><p>{html.escape(str(exc))}</p>"
                     f"<p><a href='/'>Return to Dashboard</a></p>",
                     status=500,
                 )
             return
 
         if self.serve_static:
-            rel_path = "index.html" if path == "/" else path.lstrip("/")
+            rel_path = {"/": "index.html", "/privacy": "privacy.html"}.get(path, path.lstrip("/"))
             file_path = (PUBLIC_DIR / rel_path).resolve()
-            if not str(file_path).startswith(str(PUBLIC_DIR.resolve())) or not file_path.is_file():
+            if not file_path.is_relative_to(PUBLIC_DIR.resolve()) or not file_path.is_file():
                 self.send_error(404, "Not found")
                 return
             mime_type, _ = mimetypes.guess_type(str(file_path))
@@ -163,28 +149,39 @@ class HealthspanHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         path = urllib.parse.urlparse(self.path).path
         st = self._get_session()
+        origin = self.headers.get("Origin")
+        expected_origin = self._redirect_uri().removesuffix("/callback")
+        if self.headers.get("Sec-Fetch-Site") == "cross-site" or (origin and origin != expected_origin):
+            self._send_json({"error": "Cross-origin request rejected."}, status=403)
+            return
 
         try:
             body = self._read_json_body()
-        except json.JSONDecodeError:
+        except (ValueError, UnicodeError):
             self._send_json({"error": "Invalid JSON body"}, status=400)
             return
 
         if path == "/api/config":
-            st = fitbit_client.update_config(
-                st,
-                client_id=body.get("client_id"),
-                client_secret=body.get("client_secret"),
-                chronological_age=body.get("chronological_age"),
-                manual_lean_pct=body.get("manual_lean_pct"),
-            )
-            self._send_json(self._sample_payload(st), new_state=st)
+            try:
+                st = fitbit_client.update_config(st, chronological_age=body.get("chronological_age"), manual_lean_pct=body.get("manual_lean_pct"))
+                if body.get("chronological_age") is not None:
+                    st["age_override"] = True
+                if "timezone" in body:
+                    ZoneInfo(body["timezone"])
+                    st["timezone"] = body["timezone"]
+                # Connected clients keep their current live result until re-sync succeeds.
+                payload = {"config": fitbit_client.get_config(st)} if st.get("tokens") else self._sample_payload(st)
+                self._send_json(payload, new_state=st)
+            except (ValueError, TypeError, ZoneInfoNotFoundError):
+                self._send_json({"error": "Check age (18–100), lean mass (40–95%), and timezone."}, status=400)
             return
 
         if path == "/api/auth/start":
-            client_id = (body.get("client_id") or "").strip()
-            client_secret = (body.get("client_secret") or "").strip()
             try:
+                client_id = (body.get("client_id") or "").strip()
+                client_secret = (body.get("client_secret") or "").strip()
+                ZoneInfo(body.get("timezone", "America/Chicago"))
+                st["timezone"] = body.get("timezone", "America/Chicago")
                 auth_url, st = fitbit_client.build_auth_url(st, client_id, client_secret, self._redirect_uri())
                 self._send_json({"auth_url": auth_url}, new_state=st)
             except Exception as exc:
@@ -207,7 +204,7 @@ class HealthspanHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/disconnect":
-            st = fitbit_client.disconnect(st)
+            st = {}
             self._send_json(self._sample_payload(st), new_state=st)
             return
 

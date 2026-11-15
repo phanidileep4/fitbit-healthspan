@@ -2,6 +2,25 @@ let currentDashboard = null;
 let activeCategory = "All";
 
 const $ = (id) => document.getElementById(id);
+const escapeHtml = (value) => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function notice(message, error = false) {
+  const el = $("syncNotice"); el.textContent = message; el.classList.toggle("error-box", error);
+}
+async function request(path, body) {
+  const res = await fetch(path, body === undefined ? {cache:"no-store"} : {
+    method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)
+  });
+  let data;
+  try { data = await res.json(); } catch { throw new Error("The server did not return a valid response. Please retry."); }
+  if (!res.ok || data.error) throw new Error(data.error || `Request failed (${res.status}).`);
+  return data;
+}
+function cachedDashboard() {
+  try { return JSON.parse(sessionStorage.getItem("gh_dashboard_v2") || "null"); } catch { return null; }
+}
+function cacheDashboard(data) {
+  try { sessionStorage.setItem("gh_dashboard_v2", JSON.stringify(data)); } catch { /* Private browsing can disable storage. */ }
+}
 
 function statusColor(status) {
   if (status === "optimal") return "var(--emerald)";
@@ -21,49 +40,32 @@ function formatImpact(yr) {
   return `${yr > 0 ? "+" : ""}${yr.toFixed(1)} yrs`;
 }
 
-function renderBioTrendChart(trend, chronoAge) {
+function renderRecordedTrend(pillars) {
+  const select = $("trendMetric");
+  const previous = select.value;
+  const available = pillars.filter(p => p.recent_series?.length >= 2);
+  select.replaceChildren();
+  for (const pillar of available) {
+    const option = document.createElement("option"); option.value = pillar.id;
+    option.textContent = `${pillar.name} (${pillar.unit})`; select.append(option);
+  }
+  if (available.some(p => p.id === previous)) select.value = previous;
+  const pillar = available.find(p => p.id === select.value);
   const svg = $("bioTrendChart");
-  if (!trend || trend.length === 0) {
-    svg.innerHTML = "";
+  if (!pillar) {
+    svg.innerHTML = '<text x="180" y="65" text-anchor="middle" fill="#8b98ab" font-size="11">No recorded trend available.</text>';
     return;
   }
-
-  const w = 360;
-  const h = 140;
-  const padX = 28;
-  const padY = 20;
-
-  const vals = trend.flatMap((d) => [d.biological_age, d.chronological_age]);
-  const minV = Math.min(...vals) - 2;
-  const maxV = Math.max(...vals) + 2;
-  const span = Math.max(1, maxV - minV);
-
-  const xFor = (i) => padX + (i / Math.max(1, trend.length - 1)) * (w - padX * 2);
-  const yFor = (v) => h - padY - ((v - minV) / span) * (h - padY * 2);
-
-  const bioPts = trend.map((d, i) => `${xFor(i).toFixed(1)},${yFor(d.biological_age).toFixed(1)}`).join(" ");
-  const chronoY = yFor(chronoAge).toFixed(1);
-
-  const circles = trend
-    .map(
-      (d, i) =>
-        `<circle cx="${xFor(i).toFixed(1)}" cy="${yFor(d.biological_age).toFixed(1)}" r="3.5" fill="#00f19f" />`
-    )
-    .join("");
-
-  const labels = trend
-    .map((d, i) => {
-      if (i !== 0 && i !== trend.length - 1 && i !== Math.floor(trend.length / 2)) return "";
-      return `<text x="${xFor(i).toFixed(1)}" y="${h - 4}" fill="#8b98ab" font-size="9" text-anchor="middle">${d.label}</text>`;
-    })
-    .join("");
-
-  svg.innerHTML = `
-    <line x1="${padX}" y1="${chronoY}" x2="${w - padX}" y2="${chronoY}" stroke="#607087" stroke-width="1.5" stroke-dasharray="4 4" />
-    <polyline fill="none" stroke="#00f19f" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" points="${bioPts}" />
-    ${circles}
-    ${labels}
-  `;
+  const series = pillar.recent_series;
+  const values = series.map(d => Number(d.value));
+  const min = Math.min(...values), max = Math.max(...values), span = Math.max(1, max - min);
+  const first = Date.parse(series[0].date), last = Date.parse(series.at(-1).date);
+  const points = series.map((d, i) => `${(30 + ((Date.parse(d.date)-first)/Math.max(86400000,last-first))*300).toFixed(1)},${(108-(values[i]-min)/span*80).toFixed(1)}`).join(" ");
+  svg.innerHTML = `<polyline fill="none" stroke="#00f19f" stroke-width="2.5" points="${points}"/>
+    <text x="8" y="20" fill="#8b98ab" font-size="10">${max}</text>
+    <text x="8" y="112" fill="#8b98ab" font-size="10">${min}</text>
+    <text x="30" y="135" fill="#8b98ab" font-size="10">${escapeHtml(series[0].date)}</text>
+    <text x="330" y="135" text-anchor="end" fill="#8b98ab" font-size="10">${escapeHtml(series.at(-1).date)}</text>`;
 }
 
 function renderSparkline(series, color) {
@@ -112,10 +114,10 @@ function renderPillars(pillars) {
         <div class="pillar-card">
           <div class="pillar-top">
             <div>
-              <div class="pillar-cat">${p.category}</div>
-              <div class="pillar-name">${p.name}</div>
+              <div class="pillar-cat">${escapeHtml(p.category)}</div>
+              <div class="pillar-name">${escapeHtml(p.name)}</div>
             </div>
-            <span class="impact-chip ${impactClass(p.year_impact)}">${formatImpact(p.year_impact)}</span>
+            <span class="impact-chip ${impactClass(p.year_impact)}">${p.status === "no_data" ? "Unavailable" : formatImpact(p.year_impact)}</span>
           </div>
 
           <div class="pillar-metrics">
@@ -127,14 +129,15 @@ function renderPillars(pillars) {
           </div>
 
           <div class="bar-track">
-            <div class="bar-fill" style="width: ${p.score_0_100}%; background: ${color};"></div>
+            <div class="bar-fill" style="width: ${p.score_0_100 ?? 0}%; background: ${color};"></div>
           </div>
 
           ${renderSparkline(p.recent_series, color)}
+          <p class="coverage-detail">${p.baseline_days !== undefined ? `${p.baseline_days} baseline days · ${p.recent_days} recent days` : escapeHtml(p.description)}</p>
 
           <div class="pillar-footer">
             <span>Target: ${p.target_label}</span>
-            <span>Score: ${Math.round(p.score_0_100)}/100</span>
+            <span>Score: ${p.score_0_100 == null ? "—" : Math.round(p.score_0_100) + "/100"}</span>
           </div>
         </div>
       `;
@@ -148,7 +151,7 @@ function renderDashboard(data) {
 
   // Topbar status
   const badge = $("sourceBadge");
-  if (data.data_source === "fitbit_live") {
+  if (cfg.connected) {
     badge.textContent = cfg.user_name ? `Fitbit Live · ${cfg.user_name}` : "Fitbit Live";
     badge.className = "badge badge-live";
     $("syncBtn").classList.remove("hidden");
@@ -163,17 +166,17 @@ function renderDashboard(data) {
   }
 
   $("chronoAgeInput").value = data.chronological_age;
-  if (cfg.manual_lean_pct) $("leanPctInput").value = cfg.manual_lean_pct;
+  $("leanPctInput").value = cfg.manual_lean_pct ?? "";
   if (cfg.client_id) $("clientIdInput").value = cfg.client_id;
 
   // Biological Age Hero
-  $("bioAgeValue").textContent = data.biological_age.toFixed(1);
+  $("bioAgeValue").textContent = data.biological_age == null ? "—" : data.biological_age.toFixed(1);
   $("chronoAgeLabel").textContent = data.chronological_age;
 
   const delta = data.age_delta;
   const deltaPill = $("ageDeltaPill");
-  deltaPill.textContent = `${delta > 0 ? "+" : ""}${delta.toFixed(1)} yrs`;
-  deltaPill.className = `delta-pill ${delta <= -1 ? "delta-good" : delta <= 1 ? "delta-warn" : "delta-bad"}`;
+  deltaPill.textContent = delta == null ? "Insufficient data" : `${delta > 0 ? "+" : ""}${delta.toFixed(1)} yrs`;
+  deltaPill.className = `delta-pill ${delta == null ? "delta-warn" : delta <= -1 ? "delta-good" : delta <= 1 ? "delta-warn" : "delta-bad"}`;
 
   // Ring progress (map healthspan score 0..100 to circumference 578)
   const ring = $("bioRingProgress");
@@ -182,12 +185,12 @@ function renderDashboard(data) {
   ring.style.strokeDashoffset = offset.toFixed(1);
   ring.style.stroke = delta <= 0 ? "var(--emerald)" : delta <= 2 ? "var(--amber)" : "var(--coral)";
 
-  renderBioTrendChart(data.bio_trend, data.chronological_age);
+  renderRecordedTrend(data.pillars || []);
 
   // Pace of Aging Hero
   const pace = data.pace_of_aging;
-  $("paceValue").textContent = `${pace.toFixed(2)}x`;
-  $("overallScoreValue").textContent = `${data.overall_score} / 100`;
+  $("paceValue").textContent = pace == null ? "—" : `${pace.toFixed(2)}x`;
+  $("overallScoreValue").textContent = data.overall_score == null ? "—" : `${data.overall_score} / 100 (available data)`;
   $("activePillarsValue").textContent = `${data.active_pillar_count} / 9`;
 
   const pacePill = $("paceStatusPill");
@@ -195,73 +198,75 @@ function renderDashboard(data) {
   const paceNorm = Math.min(1, Math.max(0, (pace - 0.5) / 1.0)); // 0.5x..1.5x
   paceArc.style.strokeDashoffset = (314 - paceNorm * 314).toFixed(1);
 
-  if (pace < 0.95) {
-    pacePill.textContent = "Slowing Aging";
+  if (pace == null) {
+    pacePill.textContent = "Insufficient data";
+    pacePill.className = "delta-pill delta-warn";
+    paceArc.style.strokeDashoffset = "314";
+    $("paceDescription").textContent = "More recent measurements are needed before showing an experimental pace index.";
+  } else if (pace < 0.95) {
+    pacePill.textContent = "Lower index";
     pacePill.className = "delta-pill delta-good";
     paceArc.style.stroke = "var(--emerald)";
-    $("paceDescription").textContent = "Your recent 30-day habits are actively slowing your physiological pace of aging.";
+    $("paceDescription").textContent = "Recent metrics produce a lower experimental wellness index. This does not measure your physiological aging rate.";
   } else if (pace <= 1.08) {
     pacePill.textContent = "Steady Pace";
     pacePill.className = "delta-pill delta-warn";
     paceArc.style.stroke = "var(--amber)";
-    $("paceDescription").textContent = "You are aging at roughly chronological speed. Improving sleep consistency or vigorous cardio will lower this.";
+    $("paceDescription").textContent = "Recent metrics produce a near-baseline experimental wellness index.";
   } else {
-    pacePill.textContent = "Accelerated";
+    pacePill.textContent = "Higher index";
     pacePill.className = "delta-pill delta-bad";
     paceArc.style.stroke = "var(--coral)";
-    $("paceDescription").textContent = "Recent recovery, sleep, or activity load is elevated—focus on sleep duration and aerobic recovery.";
+    $("paceDescription").textContent = "Recent metrics produce a higher experimental wellness index. Review the measured pillars below.";
   }
 
+  $("coverageNotice").textContent = data.coverage_message || "Sample data for exploring the dashboard.";
+  $("syncDetails").replaceChildren();
+  for (const item of data.diagnostics || []) {
+    const row = document.createElement("li");
+    row.textContent = `${item.metric}: ${item.status} · ${item.records} records${item.message ? " · " + item.message : ""}`;
+    $("syncDetails").append(row);
+  }
+  $("dataWindow").textContent = data.data_source === "sample_preview" ? "Illustrative sample data · Connect Google Health for your measurements." : data.window ? `${data.window.start} to ${data.window.end_exclusive} (end exclusive) · Last sync: ${cfg.last_synced || "unknown"}` : "";
   renderPillars(data.pillars || []);
 }
 
 async function loadDashboard() {
-  const hint = $("callbackUriHint");
-  if (hint) hint.textContent = `${window.location.origin}/callback`;
-
-  const res = await fetch("/api/dashboard");
-  const data = await res.json();
+  $("callbackUriHint").textContent = `${window.location.origin}/callback`;
+  // Retire the old persistent cache, which was not scoped to an account.
+  try { localStorage.removeItem("gh_cached_dashboard"); } catch {}
+  const data = await request("/api/dashboard");
   const params = new URLSearchParams(window.location.search);
-
-  if (data.config && data.config.connected) {
-    if (params.get("connected") === "1") {
-      window.history.replaceState({}, "", "/");
-      renderDashboard(data);
+  if (data.config?.connected) {
+    const cached = cachedDashboard();
+    if (cached?.config?.cache_id === data.config.cache_id && cached?.model_version === "wellness-heuristic-v2" && params.get("connected") !== "1") {
+      cached.config = data.config; renderDashboard(cached);
+      const age = Date.now() - Date.parse(data.config.last_synced || "");
+      notice("Showing your last successful sync.");
+      if (!Number.isFinite(age) || age > 15 * 60 * 1000) await syncNow();
+    } else {
+      // Never show fictional sample health scores as a connected account's result.
+      renderDashboard({...data, biological_age:null, age_delta:null, pace_of_aging:null, overall_score:null, pillars:[], active_pillar_count:0, bio_trend:[], coverage_message:"Connected. Retrieving your measurements…"});
       await syncNow();
-      return;
     }
-    const cached = localStorage.getItem("gh_cached_dashboard");
-    if (cached) {
-      try {
-        const parsed = JSON.parse(cached);
-        parsed.config = data.config;
-        renderDashboard(parsed);
-        return;
-      } catch (_) {}
-    }
+    window.history.replaceState({}, "", "/");
+  } else {
+    try { sessionStorage.removeItem("gh_dashboard_v2"); } catch {}
     renderDashboard(data);
-    await syncNow();
-    return;
   }
-
-  localStorage.removeItem("gh_cached_dashboard");
-  renderDashboard(data);
 }
 
 async function saveProfile() {
-  const chrono = Number($("chronoAgeInput").value) || 33;
-  const leanRaw = $("leanPctInput").value;
-  const body = {
-    chronological_age: chrono,
-    manual_lean_pct: leanRaw ? Number(leanRaw) : 0,
-  };
-  const res = await fetch("/api/config", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json();
-  renderDashboard(data);
+  const btn = $("saveProfileBtn"); btn.disabled = true;
+  try {
+    const data = await request("/api/config", {chronological_age:Number($("chronoAgeInput").value),
+      manual_lean_pct:$("leanPctInput").value ? Number($("leanPctInput").value) : 0,
+      timezone:Intl.DateTimeFormat().resolvedOptions().timeZone});
+    if (data.config?.connected) {
+      notice("Profile saved. Syncing updated calculations…"); await syncNow();
+    } else renderDashboard(data);
+  } catch (err) { notice(err.message, true); }
+  finally { btn.disabled = false; }
 }
 
 async function startAuth(useServerCreds = false) {
@@ -279,7 +284,7 @@ async function startAuth(useServerCreds = false) {
   const res = await fetch("/api/auth/start", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ client_id: clientId, client_secret: clientSecret }),
+    body: JSON.stringify({ client_id: clientId, client_secret: clientSecret, timezone:Intl.DateTimeFormat().resolvedOptions().timeZone }),
   });
   const data = await res.json();
   if (data.error) {
@@ -287,7 +292,7 @@ async function startAuth(useServerCreds = false) {
       errBox.textContent = data.error;
       errBox.classList.remove("hidden");
     } else {
-      alert(data.error);
+      notice(data.error, true);
     }
     return;
   }
@@ -295,31 +300,27 @@ async function startAuth(useServerCreds = false) {
 }
 
 async function syncNow() {
-  const btn = $("syncBtn");
-  btn.textContent = "Syncing...";
-  btn.disabled = true;
+  const btn = $("syncBtn"); btn.textContent = "Syncing…"; btn.disabled = true;
+  notice("Fetching your measurements…");
   try {
-    const res = await fetch("/api/sync", { method: "POST", body: "{}" });
-    const data = await res.json();
-    if (data.error) {
-      alert(`Sync error: ${data.error}`);
-    } else {
-      localStorage.setItem("gh_cached_dashboard", JSON.stringify(data));
-      renderDashboard(data);
-    }
-  } finally {
-    btn.textContent = "Sync Fitbit";
-    btn.disabled = false;
-  }
+    const data = await request("/api/sync", {});
+    cacheDashboard(data); renderDashboard(data);
+    const errors = (data.diagnostics || []).filter(d => d.status === "error").length;
+    notice(errors ? `Sync completed with ${errors} failed sources. See sync details below.` : "Sync complete. Only recorded measurements contribute to your results.", errors > 0);
+  } catch (err) { notice(`Sync failed: ${err.message} Your previous result has been kept.`, true); }
+  finally { btn.textContent = "Sync Fitbit"; btn.disabled = false; }
 }
 
 async function disconnectFitbit() {
-  localStorage.removeItem("gh_cached_dashboard");
-  const res = await fetch("/api/disconnect", { method: "POST", body: "{}" });
-  const data = await res.json();
-  $("connectModal").classList.add("hidden");
-  renderDashboard(data);
+  try {
+    const data = await request("/api/disconnect", {});
+    try { sessionStorage.removeItem("gh_dashboard_v2"); } catch {}
+    $("connectModal").classList.add("hidden"); renderDashboard(data);
+    notice("Disconnected and cleared this tab’s cached dashboard. To revoke Google's grant, visit Google Account permissions.");
+  } catch (err) { notice(err.message, true); }
 }
+
+$("trendMetric").addEventListener("change", () => { if (currentDashboard) renderRecordedTrend(currentDashboard.pillars || []); });
 
 // Event listeners
 $("saveProfileBtn").addEventListener("click", saveProfile);
@@ -327,13 +328,13 @@ $("syncBtn").addEventListener("click", syncNow);
 $("connectBtn").addEventListener("click", () => {
   const cfg = currentDashboard && currentDashboard.config;
   if (cfg && cfg.has_server_credentials && !cfg.connected) {
-    startAuth(true);
+    startAuth(true).catch(err => notice(err.message, true));
     return;
   }
   $("connectModal").classList.remove("hidden");
 });
 $("closeModalBtn").addEventListener("click", () => $("connectModal").classList.add("hidden"));
-$("authorizeBtn").addEventListener("click", () => startAuth(false));
+$("authorizeBtn").addEventListener("click", () => startAuth(false).catch(err => notice(err.message, true)));
 $("disconnectBtn").addEventListener("click", disconnectFitbit);
 
 $("categoryFilters").addEventListener("click", (e) => {
@@ -345,4 +346,4 @@ $("categoryFilters").addEventListener("click", (e) => {
   if (currentDashboard) renderPillars(currentDashboard.pillars || []);
 });
 
-loadDashboard();
+loadDashboard().catch(err => notice(err.message, true));
