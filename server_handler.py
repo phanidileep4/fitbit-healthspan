@@ -130,7 +130,7 @@ class HealthspanHandler(BaseHTTPRequestHandler):
             return
 
         if self.serve_static:
-            rel_path = {"/": "index.html", "/privacy": "privacy.html"}.get(path, path.lstrip("/"))
+            rel_path = {"/": "index.html", "/privacy": "privacy.html", "/methodology": "methodology.html"}.get(path, path.lstrip("/"))
             file_path = (PUBLIC_DIR / rel_path).resolve()
             if not file_path.is_relative_to(PUBLIC_DIR.resolve()) or not file_path.is_file():
                 self.send_error(404, "Not found")

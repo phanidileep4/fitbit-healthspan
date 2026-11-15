@@ -108,6 +108,41 @@ class DataTests(unittest.TestCase):
         data=engine.compute_from_fitbit_raw(raw,35)
         self.assertIsNone(next(p for p in data['pillars'] if p['id']=='hr_zones_1_3')['baseline_value'])
 
+    def test_reference_guidance_and_calendars(self):
+        data=engine.generate_sample_dashboard(35)
+        by_id={p['id']:p for p in data['pillars']}
+        self.assertEqual(len(by_id['daily_steps']['calendar']),30)
+        self.assertTrue(all(d['recorded'] for d in by_id['daily_steps']['calendar']))
+        self.assertIn('60–100',by_id['resting_heart_rate']['reference']['label'])
+        self.assertIn('No universal',by_id['lean_body_mass']['reference']['label'])
+        self.assertIn('OR',by_id['hr_zones_4_5']['reference']['label'])
+        self.assertIsNotNone(data['goal_metrics']['cardio_minutes'])
+
+    def test_manual_lean_is_undated_and_not_muscle(self):
+        data=engine.compute_from_fitbit_raw({'as_of':'2026-11-15'},35,80)
+        lean=next(p for p in data['pillars'] if p['id']=='lean_body_mass')
+        self.assertEqual(lean['recent_value'],80)
+        self.assertEqual(lean['recent_source'],'Manual fallback (undated)')
+        self.assertFalse(any(d['recorded'] for d in lean['calendar']))
+        self.assertIsNone(lean['latest_observation'])
+
+    def test_one_zone_does_not_invent_other_zone_observations(self):
+        raw={'as_of':'2026-11-15','heart':[{'dateTime':f'2026-11-{d:02}','value':{'heartRateZones':[{'name':'Fat Burn','minutes':30}]}} for d in range(1,15)]}
+        data=engine.compute_from_fitbit_raw(raw,35)
+        vigorous=next(p for p in data['pillars'] if p['id']=='hr_zones_4_5')
+        self.assertIsNone(vigorous['baseline_value'])
+        self.assertIsNone(data['goal_metrics']['cardio_minutes'])
+
+    def test_strength_goal_uses_days_not_session_count(self):
+        raw={'as_of':'2026-11-15','activities':[{'startTime':'2026-11-10T12:00:00','activityName':'WEIGHTS'},{'startTime':'2026-11-10T18:00:00','activityName':'WEIGHTS'}]}
+        data=engine.compute_from_fitbit_raw(raw,35)
+        self.assertAlmostEqual(data['goal_metrics']['strength_days'],round(7/30,2))
+
+    def test_provider_fitness_classification_is_retained(self):
+        raw={'as_of':'2026-11-15','cardioscore':[{'dateTime':'2026-11-10','value':{'vo2Max':42},'fitness_level':'GOOD'}]}
+        data=engine.compute_from_fitbit_raw(raw,35)
+        self.assertEqual(next(p for p in data['pillars'] if p['id']=='vo2_max')['provider_fitness_level'],'GOOD')
+
 
 class SecurityTests(unittest.TestCase):
     def test_session_roundtrip_tampering_and_legacy(self):
@@ -156,7 +191,7 @@ class HTTPTests(unittest.TestCase):
         status=int(lines[0].split()[1])
         return status,dict(line.split(': ',1) for line in lines[1:]),content
     def test_routes_and_headers(self):
-        for path in ['/','/privacy','/api/dashboard']:
+        for path in ['/','/privacy','/methodology','/api/dashboard']:
             status,headers,body=self.request(path)
             self.assertEqual(status,200)
             self.assertEqual(headers['Cache-Control'],'no-store')

@@ -1,0 +1,11 @@
+const fs=require('node:fs');const vm=require('node:vm');const assert=require('node:assert/strict');
+const context=vm.createContext({});vm.runInContext(fs.readFileSync('public/insights.js','utf8')+';globalThis.tools=WellnessTools;',context);
+const t=context.tools;
+const data={data_source:'fitbit_live',window:{end_exclusive:'2026-11-14'},config:{last_synced:'2026-11-14T10:00:00-06:00',tokens:{access_token:'DO_NOT_EXPORT'},client_secret:'DO_NOT_EXPORT'},model_version:'v2',chronological_age:35,overall_score:70,pillars:[{id:'steps',baseline_value:8000,recent_value:8500,unit:'steps',score_0_100:75,status:'good',baseline_days:180,recent_days:30}]};
+const a=t.snapshot(data);assert(!JSON.stringify(a).includes('DO_NOT_EXPORT'));const b=JSON.parse(JSON.stringify(a));b.as_of='2026-11-13';assert.equal(t.comparable(a,b),null);
+b.model='old';assert.equal(t.comparable(a,b),'Model versions differ.');b.model=a.model;b.pillars[0].days=10;assert.equal(t.comparable(a,b),'Data coverage differs substantially.');
+b.pillars[0].days=180;b.pillars[0].available=false;assert.equal(t.comparable(a,b),'Available pillars differ.');
+assert.throws(()=>t.validateGoals({sleep_hours:7,steps:-1,cardio_minutes:150,strength_days:2}));
+const dangerous=JSON.parse(JSON.stringify(a));dangerous.pillars[0].id='=HYPERLINK("https://example.com")';assert(t.csv([dangerous]).includes("'=HYPERLINK"));
+assert(t.csv([a]).includes('baseline_days'));assert(!t.csv([a]).includes('DO_NOT_EXPORT'));
+console.log('Browser logic checks passed: credential-free snapshots/exports, coverage/model guards, goal validation, CSV formula escaping.');

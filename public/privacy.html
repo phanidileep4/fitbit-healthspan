@@ -33,7 +33,7 @@
       <p style="color:var(--muted);">
         Healthspan is stateless and does <strong>not</strong> store your health metrics or OAuth tokens in any server-side database.
         Your OAuth session token is stored only in an encrypted, authenticated HttpOnly browser cookie, and your computed dashboard
-        summary is cached in this tab’s <code>sessionStorage</code> until you disconnect or close the tab.
+        summary is cached in this tab’s <code>sessionStorage</code> until you disconnect or close the tab. Optional dated snapshots and explicitly saved goals use account-scoped <code>localStorage</code> on this browser. Snapshot history is limited to 180 entries and is not encrypted at rest. Use <strong>Clear saved history</strong> or <strong>Disconnect</strong> to delete this account’s snapshots. Disabling snapshot saving stops new saves; existing entries remain until cleared. Downloaded exports remain on your device until you delete them.
       </p>
 
       <h3>3. Data Sharing &amp; Deletion</h3>

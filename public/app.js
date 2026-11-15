@@ -135,9 +135,18 @@ function renderPillars(pillars) {
           ${renderSparkline(p.recent_series, color)}
           <p class="coverage-detail">${p.baseline_days !== undefined ? `${p.baseline_days} baseline days · ${p.recent_days} recent days` : escapeHtml(p.description)}</p>
 
+          <details class="reference-detail"><summary>Good values &amp; data coverage</summary>
+            <p>${escapeHtml(p.reference?.note || '')}</p>
+            ${p.reference?.source_url ? `<a href="${escapeHtml(p.reference.source_url)}" target="_blank" rel="noopener">${escapeHtml(p.reference.source_label)}</a>` : ''}
+            ${p.provider_fitness_level ? `<p>Google fitness level: ${escapeHtml(p.provider_fitness_level.replaceAll('_',' '))}</p>` : ''}
+            ${p.baseline_source ? `<p>Baseline: ${escapeHtml(p.baseline_source)}<br>Recent: ${escapeHtml(p.recent_source)}</p>` : ''}
+            <p>${escapeHtml(p.freshness || 'No dated observations')} · latest: ${escapeHtml(p.latest_observation || 'unavailable')}</p>
+            <div class="coverage-calendar" aria-label="Last 30 days of recorded data">${(p.calendar||[]).map(d=>`<span class="coverage-day ${d.recorded?'recorded':''}" title="${escapeHtml(d.date)}: ${d.recorded?'recorded':'not recorded'}" role="img" aria-label="${escapeHtml(d.date)}: ${d.recorded?'recorded':'not recorded'}"></span>`).join('')}</div>
+            <p class="muted">Green = recorded; gray = no observation. ${escapeHtml(p.coverage_note || '')}</p>
+          </details>
           <div class="pillar-footer">
-            <span>Target: ${p.target_label}</span>
-            <span>Score: ${p.score_0_100 == null ? "—" : Math.round(p.score_0_100) + "/100"}</span>
+            <span>Compare: ${escapeHtml(p.target_label)}</span>
+            <span>App score: ${p.score_0_100 == null ? "—" : Math.round(p.score_0_100) + "/100"}</span>
           </div>
         </div>
       `;
@@ -229,6 +238,7 @@ function renderDashboard(data) {
   }
   $("dataWindow").textContent = data.data_source === "sample_preview" ? "Illustrative sample data · Connect Google Health for your measurements." : data.window ? `${data.window.start} to ${data.window.end_exclusive} (end exclusive) · Last sync: ${cfg.last_synced || "unknown"}` : "";
   renderPillars(data.pillars || []);
+  renderInsights(data);
 }
 
 async function loadDashboard() {
@@ -239,7 +249,7 @@ async function loadDashboard() {
   const params = new URLSearchParams(window.location.search);
   if (data.config?.connected) {
     const cached = cachedDashboard();
-    if (cached?.config?.cache_id === data.config.cache_id && cached?.model_version === "wellness-heuristic-v2" && params.get("connected") !== "1") {
+    if (cached?.config?.cache_id === data.config.cache_id && cached?.model_version === "wellness-heuristic-v3" && cached?.guidance_version === "adult-reference-2026-11" && cached.chronological_age === data.config.chronological_age && (cached.config.manual_lean_pct ?? null) === (data.config.manual_lean_pct ?? null) && params.get("connected") !== "1") {
       cached.config = data.config; renderDashboard(cached);
       const age = Date.now() - Date.parse(data.config.last_synced || "");
       notice("Showing your last successful sync.");
@@ -304,16 +314,21 @@ async function syncNow() {
   notice("Fetching your measurements…");
   try {
     const data = await request("/api/sync", {});
-    cacheDashboard(data); renderDashboard(data);
+    cacheDashboard(data);
+    let storageError = false;
+    try { saveSnapshot(data); } catch { storageError = true; }
+    renderDashboard(data);
     const errors = (data.diagnostics || []).filter(d => d.status === "error").length;
-    notice(errors ? `Sync completed with ${errors} failed sources. See sync details below.` : "Sync complete. Only recorded measurements contribute to your results.", errors > 0);
+    notice(storageError ? "Sync complete, but browser history could not be saved. Check storage permissions." : errors ? `Sync completed with ${errors} failed sources. See sync details below.` : "Sync complete. Only recorded measurements contribute to your results.", errors > 0);
   } catch (err) { notice(`Sync failed: ${err.message} Your previous result has been kept.`, true); }
   finally { btn.textContent = "Sync Fitbit"; btn.disabled = false; }
 }
 
 async function disconnectFitbit() {
   try {
+    const historyKeys = [localKey("history"),localKey("history_enabled")];
     const data = await request("/api/disconnect", {});
+    try { for (const key of historyKeys) if(key) localStorage.removeItem(key); } catch {}
     try { sessionStorage.removeItem("gh_dashboard_v2"); } catch {}
     $("connectModal").classList.add("hidden"); renderDashboard(data);
     notice("Disconnected and cleared this tab’s cached dashboard. To revoke Google's grant, visit Google Account permissions.");
@@ -321,6 +336,22 @@ async function disconnectFitbit() {
 }
 
 $("trendMetric").addEventListener("change", () => { if (currentDashboard) renderRecordedTrend(currentDashboard.pillars || []); });
+
+$('saveHistory').addEventListener('change', () => {
+  try { writeLocal('history_enabled',$('saveHistory').checked); if($('saveHistory').checked) saveSnapshot(currentDashboard); renderInsights(currentDashboard); }
+  catch { $('saveHistory').checked=false;notice('Your browser could not save history. Check storage permissions.',true); }
+});
+$('clearHistory').addEventListener('click', () => {
+  try { for(const suffix of ['history','history_enabled']) {const key=localKey(suffix);if(key) localStorage.removeItem(key);} renderInsights(currentDashboard);notice('Saved history deleted for this account.'); }
+  catch { notice('Could not clear browser storage.',true); }
+});
+$('saveGoals').addEventListener('click', () => {
+  try { const goals=Object.fromEntries(Object.keys(WellnessTools.defaults).map(key=>[key,Number($('goal_'+key).value)]));
+    WellnessTools.validateGoals(goals);writeLocal('goals',goals);renderInsights(currentDashboard);notice('Personal goals saved on this browser. They do not change the experimental scoring model.'); }
+  catch(err) {notice(err.message,true);}
+});
+$('exportJson').addEventListener('click',()=>downloadExport('json'));
+$('exportCsv').addEventListener('click',()=>downloadExport('csv'));
 
 // Event listeners
 $("saveProfileBtn").addEventListener("click", saveProfile);

@@ -25,8 +25,8 @@
           <input id="chronoAgeInput" type="number" min="18" max="100" step="1" value="33" />
         </div>
         <div class="inline-field">
-          <label for="leanPctInput">Lean %</label>
-          <input id="leanPctInput" type="number" min="40" max="95" step="0.5" placeholder="Auto" />
+          <label for="leanPctInput">Lean fallback %</label>
+          <input id="leanPctInput" type="number" min="40" max="95" step="0.5" placeholder="Optional" title="Leave blank to use body-fat logs. No logs means unavailable, unless a fallback is entered." aria-describedby="leanHelp" />
         </div>
         <button id="saveProfileBtn" class="btn btn-ghost">Apply</button>
         <button id="syncBtn" class="btn btn-secondary hidden">Sync Fitbit</button>
@@ -41,6 +41,9 @@
         <p id="dataWindow" class="muted"></p>
         <details><summary>Sync details</summary><ul id="syncDetails"></ul></details>
       </div>
+      <details class="lean-help"><summary>What does lean mass mean?</summary>
+        <p id="leanHelp">Leave the field blank to use body-fat measurements from Google Health: lean mass % = 100 − body fat %. Example: 20% body fat → 80% lean mass. It includes water, bone, organs, and muscle—not just muscle. Your watch does not automatically measure this. If no body-fat data exists, the value is unavailable unless you enter a measured fallback. A fallback is used only in windows without body-fat logs; it has no measurement date.</p>
+      </details>
       <section class="hero-grid">
         <!-- Biological Age Card -->
         <div class="card hero-card">
@@ -134,10 +137,32 @@
 
         <div id="pillarsGrid" class="pillars-grid"></div>
       </section>
+      <section class="insights-section card">
+        <h2>Your goals</h2>
+        <p class="muted">Personal targets, not medical cutoffs. Progress uses the last 30 days of available records; gaps can bias averages. Cardio combines moderate + 2 × vigorous minutes.</p>
+        <div class="goals-grid">
+          <label>Sleep hours/night<input id="goal_sleep_hours" type="number" min="4" max="12" step="0.25" /></label>
+          <label>Steps/day<input id="goal_steps" type="number" min="500" max="40000" step="500" /></label>
+          <label>Moderate-equivalent min/week<input id="goal_cardio_minutes" type="number" min="0" max="1500" step="15" /></label>
+          <label>Strength days/week<input id="goal_strength_days" type="number" min="0" max="7" step="1" /></label>
+        </div>
+        <button id="saveGoals" class="btn btn-secondary">Save goals on this browser</button>
+        <div id="goalProgress" aria-live="polite"></div>
+      </section>
+      <section class="insights-section card">
+        <h2>Real sync history &amp; exports</h2>
+        <label class="history-toggle"><input id="saveHistory" type="checkbox" /> Save dated snapshots on this browser (optional)</label>
+        <p id="historyPrivacy" class="muted"></p>
+        <p id="historyComparison"></p><p id="historyEmpty">History starts with your next saved live sync. No past age values are invented.</p>
+        <div class="table-scroll"><table><thead><tr><th>As of</th><th>App score</th><th>Wellness age</th><th>Pillars</th></tr></thead><tbody id="historyRows"></tbody></table></div>
+        <div class="export-actions"><button id="exportJson" class="btn btn-secondary">Export JSON</button><button id="exportCsv" class="btn btn-secondary">Export CSV</button><button id="clearHistory" class="btn btn-ghost">Clear saved history</button></div>
+        <p class="muted">Exports contain health measurements and saved history, without OAuth credentials. Keep downloaded files private.</p>
+      </section>
     </main>
 
     <footer style="margin-top:40px; padding-top:16px; border-top:1px solid var(--border); display:flex; justify-content:space-between; font-size:0.78rem; color:var(--muted);">
       <span>Healthspan · Transparent longevity scoring from your Fitbit / Google Health data</span>
+      <a href="/methodology">Reference ranges &amp; methodology</a>
       <a href="/privacy" style="color:var(--muted); text-decoration:underline;">Privacy Policy</a>
     </footer>
   </div>
@@ -174,6 +199,7 @@
     </div>
   </div>
 
+  <script src="/insights.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>
