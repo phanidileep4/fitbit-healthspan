@@ -3,7 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Healthspan — Fitbit Biological Age Dashboard</title>
+  <title>Healthspan — Fitbit Wellness Dashboard</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
@@ -13,7 +14,7 @@
         <div class="brand-dot"></div>
         <div>
           <h1>HEALTHSPAN</h1>
-          <span class="subtitle">Fitbit Biological Age &amp; Pace of Aging</span>
+          <span class="subtitle">Fitbit wellness trends &amp; experimental age estimates</span>
         </div>
       </div>
 
@@ -34,15 +35,21 @@
     </header>
 
     <main>
+      <div class="data-notices">
+        <p id="syncNotice" role="status" aria-live="polite"></p>
+        <p id="coverageNotice"></p>
+        <p id="dataWindow" class="muted"></p>
+        <details><summary>Sync details</summary><ul id="syncDetails"></ul></details>
+      </div>
       <section class="hero-grid">
         <!-- Biological Age Card -->
         <div class="card hero-card">
           <div class="card-header">
             <div>
               <span class="eyebrow">LONG-TERM BASELINE (UP TO 6 MONTHS)</span>
-              <h2>Biological Age</h2>
+              <h2>Estimated Wellness Age</h2>
             </div>
-            <span id="ageDeltaPill" class="delta-pill delta-good">-3.8 yrs</span>
+            <span id="ageDeltaPill" class="delta-pill delta-warn">Loading</span>
           </div>
 
           <div class="bio-hero-body">
@@ -59,12 +66,10 @@
             </div>
 
             <div class="trend-wrap">
-              <div class="trend-title">6-Month Biological Age Trajectory</div>
+              <label class="trend-title" for="trendMetric">Recorded trends · last 30 days</label>
+              <select id="trendMetric" aria-label="Trend measurement"></select>
               <svg id="bioTrendChart" viewBox="0 0 360 140" class="trend-svg"></svg>
-              <div class="trend-legend">
-                <span><i class="dot dot-emerald"></i> Biological Age</span>
-                <span><i class="dot dot-muted"></i> Chronological Age</span>
-              </div>
+
             </div>
           </div>
         </div>
@@ -74,9 +79,9 @@
           <div class="card-header">
             <div>
               <span class="eyebrow">RECENT TRAJECTORY (LAST 30 DAYS)</span>
-              <h2>Pace of Aging</h2>
+              <h2>Recent Wellness Index</h2>
             </div>
-            <span id="paceStatusPill" class="delta-pill delta-good">Slowing</span>
+            <span id="paceStatusPill" class="delta-pill delta-warn">Loading</span>
           </div>
 
           <div class="pace-hero-body">
@@ -87,8 +92,8 @@
                       stroke-dasharray="314" stroke-dashoffset="157" />
               </svg>
               <div class="speedo-center">
-                <div id="paceValue" class="hero-number">0.8x</div>
-                <div class="hero-sub">1.0x = normal aging</div>
+                <div id="paceValue" class="hero-number">—</div>
+                <div class="hero-sub">1.0x = model baseline</div>
               </div>
             </div>
 
@@ -102,7 +107,7 @@
                 <span id="activePillarsValue" class="stat-val">9 / 9</span>
               </div>
               <p id="paceDescription" class="pace-note">
-                Your last 30 days of sleep, cardiovascular load, and recovery are slowing your physiological aging rate.
+                Connect your account to review your recorded measurements.
               </p>
             </div>
           </div>
@@ -114,7 +119,7 @@
         <div class="section-header">
           <div>
             <h2>The 9 Healthspan Pillars</h2>
-            <p>Each metric contributes years to or from your Biological Age based on your 6-month baseline and 30-day trend.</p>
+            <p>Experimental scoring from up to 180 completed days and the latest 30 days. Missing data is excluded. These estimates are not validated biological age or aging-rate measurements.</p>
           </div>
           <div class="filter-pills" id="categoryFilters">
             <button class="filter-btn active" data-cat="All">All</button>
@@ -139,10 +144,10 @@
 
   <!-- Connect Fitbit Modal -->
   <div id="connectModal" class="modal-backdrop hidden">
-    <div class="modal">
+    <div class="modal" role="dialog" aria-modal="true" aria-label="Google Health settings">
       <div class="modal-header">
         <h3>Connect Your Google Health Account</h3>
-        <button id="closeModalBtn" class="icon-btn">&times;</button>
+        <button id="closeModalBtn" aria-label="Close settings" class="icon-btn">&times;</button>
       </div>
       <div class="modal-body">
         <ol class="setup-steps">

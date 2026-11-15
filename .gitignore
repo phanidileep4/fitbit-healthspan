@@ -3,3 +3,7 @@ __pycache__/
 .fitbit_state.json
 .vercel/
 .DS_Store
+
+.venv/
+.env*
+!.env.example

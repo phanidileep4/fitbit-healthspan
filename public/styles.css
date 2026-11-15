@@ -647,3 +647,11 @@ body {
   gap: 10px;
   margin-top: 18px;
 }
+
+.data-notices { padding: 16px 0; color: var(--muted); font-size: .85rem; line-height: 1.6; }
+.data-notices p { margin: 4px 0; }
+.data-notices summary { cursor: pointer; }
+.coverage-detail { color: var(--muted); font-size: .75rem; margin: 8px 0; }
+@media (max-width: 600px) { .topbar-actions { width:100%; } .hero-number { font-size: 2.5rem; } }
+
+#trendMetric { display:block; width:100%; margin:8px 0; padding:8px; background:var(--panel, #151c27); color:var(--text, #e4e9f2); border:1px solid var(--border); border-radius:8px; }

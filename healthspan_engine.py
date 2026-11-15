@@ -2,9 +2,8 @@
 Healthspan & Biological Age scoring engine modeled after WHOOP's 9-pillar
 Healthspan framework (Biological Age + Pace of Aging).
 
-All calculations are transparent, deterministic, and based on epidemiological
-risk-ratio approximations across sleep, cardiovascular fitness, activity, and
-body composition.
+Experimental wellness heuristics, not a validated biological clock or WHOOP algorithm.
+Control points are product assumptions and do not measure physiological aging.
 """
 
 from __future__ import annotations
@@ -87,8 +86,14 @@ def compute_sleep_consistency(sleep_logs: List[Dict[str, Any]]) -> Tuple[Optiona
     if len(bed_mins) < 3:
         return None, 0.0
 
-    bed_std = statistics.pstdev(bed_mins)
-    wake_std = statistics.pstdev(wake_mins)
+    def circular_std(values):
+        angles = [v * 2 * math.pi / 1440 for v in values]
+        resultant = math.hypot(statistics.mean(math.cos(a) for a in angles),
+                                statistics.mean(math.sin(a) for a in angles))
+        return math.sqrt(-2 * math.log(max(1e-12, min(1.0, resultant)))) * 1440 / (2 * math.pi)
+
+    bed_std = circular_std(bed_mins)
+    wake_std = circular_std(wake_mins)
     avg_std = (bed_std + wake_std) / 2.0
     consistency_pct = _clamp(100.0 - max(0.0, avg_std - 15.0) * (100.0 / 150.0), 0.0, 100.0)
     return round(consistency_pct, 1), round(avg_std, 1)
@@ -130,7 +135,7 @@ def _score_pillars(
         pace_impact=round(pace, 3),
         score_0_100=round(sc, 1),
         status=_status_from_score(sc, b_cons is not None),
-        recent_series=recent_days["series"].get("sleep_hours", []),
+        recent_series=[],
     ))
 
     # 2. Total Sleep Duration (hrs/night)
@@ -197,9 +202,9 @@ def _score_pillars(
         yr, sc, pace = 0.0, 50.0, 0.0
     pillars.append(PillarResult(
         id="hr_zones_1_3",
-        name="HR Zones 1–3 (Aerobic)",
+        name="Moderate Cardio",
         category="Cardio Load",
-        description="Weekly minutes in low-to-moderate aerobic heart rate zones.",
+        description="Weekly minutes in the provider’s moderate heart rate zone.",
         unit="min/wk",
         baseline_value=round(b_z13) if b_z13 is not None else None,
         recent_value=round(r_z13) if r_z13 is not None else None,
@@ -223,7 +228,7 @@ def _score_pillars(
         yr, sc, pace = 0.0, 50.0, 0.0
     pillars.append(PillarResult(
         id="hr_zones_4_5",
-        name="HR Zones 4–5 (Vigorous)",
+        name="Vigorous + Peak Cardio",
         category="Cardio Load",
         description="Weekly minutes in high-intensity cardiovascular zones.",
         unit="min/wk",
@@ -251,7 +256,7 @@ def _score_pillars(
         id="strength_training",
         name="Strength Activities",
         category="Musculoskeletal",
-        description="Weekly resistance & strength-building workouts logged.",
+        description="Logged resistance sessions per week; unlogged training is unknown.",
         unit="sessions/wk",
         baseline_value=round(b_str, 1) if b_str is not None else None,
         recent_value=round(r_str, 1) if r_str is not None else None,
@@ -352,17 +357,8 @@ def _score_pillars(
     active_scores = [p.score_0_100 for p in pillars if p.status != "no_data"]
     overall_score = round(sum(active_scores) / len(active_scores), 1) if active_scores else 50.0
 
-    # Generate 6-month biological age trajectory for the chart
+    # Historical age values cannot be reconstructed by interpolating today's score.
     bio_trend = []
-    for i in range(6):
-        dt = (datetime.now() - timedelta(days=30 * (5 - i))).strftime("%b %Y")
-        # Smooth progression toward current bio_age
-        step_delta = total_year_delta * (0.65 + 0.35 * (i / 5.0))
-        bio_trend.append({
-            "label": dt,
-            "biological_age": round(chronological_age + step_delta, 1),
-            "chronological_age": round(chronological_age, 1),
-        })
 
     return {
         "chronological_age": round(chronological_age, 1),
@@ -381,7 +377,7 @@ def compute_from_fitbit_raw(raw_data: Dict[str, Any], chronological_age: float, 
     Normalize raw Fitbit Web API payloads into baseline (up to 180d) and
     recent (last 30d) buckets, then compute Biological Age & Pace of Aging.
     """
-    today = datetime.now().date()
+    today = datetime.fromisoformat(raw_data.get("as_of", datetime.now().date().isoformat())).date()
     cutoff_30 = (today - timedelta(days=30)).isoformat()
     cutoff_180 = (today - timedelta(days=180)).isoformat()
 
@@ -391,9 +387,9 @@ def compute_from_fitbit_raw(raw_data: Dict[str, Any], chronological_age: float, 
         steps_series: List[Dict[str, Any]] = []
         for row in raw_data.get("steps", []):
             d = row.get("dateTime", "")
-            if d >= start_iso:
+            if start_iso <= d < today.isoformat():
                 val = float(row.get("value", 0))
-                if val > 0:
+                if math.isfinite(val) and val >= 0:
                     steps_list.append(val)
                     steps_series.append({"date": d, "value": round(val)})
 
@@ -407,7 +403,7 @@ def compute_from_fitbit_raw(raw_data: Dict[str, Any], chronological_age: float, 
 
         for row in raw_data.get("heart", []):
             d = row.get("dateTime", "")
-            if d < start_iso:
+            if not start_iso <= d < today.isoformat():
                 continue
             val = row.get("value", {})
             rhr = val.get("restingHeartRate")
@@ -415,7 +411,9 @@ def compute_from_fitbit_raw(raw_data: Dict[str, Any], chronological_age: float, 
                 rhr_list.append(float(rhr))
                 rhr_series.append({"date": d, "value": float(rhr)})
 
-            zones = val.get("heartRateZones", [])
+            zones = val.get("heartRateZones")
+            if zones is None:
+                continue
             day_z13 = 0.0
             day_z45 = 0.0
             for z in zones:
@@ -436,7 +434,7 @@ def compute_from_fitbit_raw(raw_data: Dict[str, Any], chronological_age: float, 
         # Sleep
         sleep_logs = [
             s for s in raw_data.get("sleep", [])
-            if s.get("dateOfSleep", "") >= start_iso and s.get("isMainSleep", True)
+            if start_iso <= s.get("dateOfSleep", "") < today.isoformat() and s.get("isMainSleep", True)
         ]
         sleep_hours: List[Optional[float]] = []
         sleep_series: List[Dict[str, Any]] = []
@@ -452,7 +450,7 @@ def compute_from_fitbit_raw(raw_data: Dict[str, Any], chronological_age: float, 
         vo2_series: List[Dict[str, Any]] = []
         for c in raw_data.get("cardioscore", []):
             d = c.get("dateTime", "")
-            if d < start_iso:
+            if not start_iso <= d < today.isoformat():
                 continue
             vo2_raw = c.get("value", {}).get("vo2Max")
             if vo2_raw is None:
@@ -471,23 +469,28 @@ def compute_from_fitbit_raw(raw_data: Dict[str, Any], chronological_age: float, 
                 vo2_series.append({"date": d, "value": round(vo2_val, 1)})
 
         # Strength activities
-        strength_keywords = {"weights", "strength", "workout", "bootcamp", "crossfit", "kettlebell", "circuit"}
+        strength_types = {"weights", "strength_training", "functional_strength_training", "free_weights",
+                          "weightlifting", "weight_machines", "powerlifting", "resistance_bands",
+                          "body_weight", "calisthenics", "strength"}
         strength_count = 0
         for act in raw_data.get("activities", []):
             d = (act.get("startTime") or "")[:10]
-            if d < start_iso:
+            if not start_iso <= d < today.isoformat():
                 continue
             name = (act.get("activityName") or "").lower()
-            if any(k in name for k in strength_keywords):
+            if name.replace(" ", "_") in strength_types:
                 strength_count += 1
         days_span = max(7, (today - datetime.fromisoformat(start_iso).date()).days)
-        weekly_strength = (strength_count / (days_span / 7.0)) if raw_data.get("activities") is not None else None
+        # An empty exercise history cannot establish that no strength training occurred.
+        recorded_sessions = [a for a in raw_data.get("activities", [])
+                             if start_iso <= (a.get("startTime") or "")[:10] < today.isoformat()]
+        weekly_strength = (strength_count / (days_span / 7.0)) if recorded_sessions else None
 
         # Lean body mass %
         lbm_list: List[Optional[float]] = []
         for f in raw_data.get("body_fat", []):
             d = f.get("date", "")
-            if d >= start_iso and f.get("fat") is not None:
+            if start_iso <= d < today.isoformat() and f.get("fat") is not None:
                 lbm_list.append(round(100.0 - float(f["fat"]), 1))
         if not lbm_list and manual_lean_pct is not None:
             lbm_list = [manual_lean_pct]
@@ -502,6 +505,9 @@ def compute_from_fitbit_raw(raw_data: Dict[str, Any], chronological_age: float, 
             "vo2_max": vo2_list,
             "weekly_strength_sessions": weekly_strength,
             "lean_mass_pct": lbm_list,
+            "coverage": {"steps": len(set(x["date"] for x in steps_series)), "rhr": len(set(x["date"] for x in rhr_series)),
+                         "sleep_hours": len(set(x["date"] for x in sleep_series)), "zone13_mins": len(set(x["date"] for x in z13_series)),
+                         "zone45_mins": len(set(x["date"] for x in z45_series)), "vo2_max": len(set(x["date"] for x in vo2_series))},
             "series": {
                 "steps": steps_series[-30:],
                 "rhr": rhr_series[-30:],
@@ -515,6 +521,37 @@ def compute_from_fitbit_raw(raw_data: Dict[str, Any], chronological_age: float, 
     baseline = build_bucket(cutoff_180)
     recent = build_bucket(cutoff_30)
     result = _score_pillars(chronological_age, baseline, recent)
+    # Coverage is an explicit display rule, not a claim of clinical validity.
+    mapping = {"sleep_consistency": "sleep_hours", "sleep_duration": "sleep_hours", "daily_steps": "steps",
+               "hr_zones_1_3": "zone13_mins", "hr_zones_4_5": "zone45_mins", "resting_heart_rate": "rhr",
+               "vo2_max": "vo2_max"}
+    for pillar in result["pillars"]:
+        series_key = mapping.get(pillar["id"])
+        if series_key:
+            pillar["baseline_days"] = baseline["coverage"][series_key]
+            pillar["recent_days"] = recent["coverage"][series_key]
+            minimum = 1 if pillar["id"] == "vo2_max" else 14
+            if pillar["baseline_days"] < minimum:
+                pillar.update(status="no_data", baseline_value=None, year_impact=0.0, pace_impact=0.0)
+            if pillar["recent_days"] < minimum:
+                pillar.update(recent_value=None, pace_impact=0.0)
+        if pillar["status"] == "no_data":
+            pillar["score_0_100"] = None
+    active = [p for p in result["pillars"] if p["status"] != "no_data"]
+    result["active_pillar_count"] = len(active)
+    result["overall_score"] = round(statistics.mean(p["score_0_100"] for p in active), 1) if active else None
+    sufficient = len(active) >= 6
+    recent_sufficient = sum(p["recent_value"] is not None for p in active) >= 6
+    delta = round(sum(p["year_impact"] for p in active), 1)
+    result["biological_age"] = round(max(18, chronological_age + delta), 1) if sufficient else None
+    result["age_delta"] = round(result["biological_age"] - chronological_age, 1) if sufficient else None
+    result["pace_of_aging"] = round(_clamp(1 + sum(p["pace_impact"] for p in active), .45, 1.65), 2) if recent_sufficient else None
+    result["coverage_message"] = f"{len(active)} of 9 pillars available. " + (
+        "Experimental estimate; not a validated biological age measurement." if sufficient else
+        "Overall estimates need at least 6 pillars; daily metrics need 14 recorded days.")
+    result["diagnostics"] = raw_data.get("diagnostics", [])
+    result["window"] = {"start": cutoff_180, "end_exclusive": today.isoformat(), "recent_start": cutoff_30}
+    result["model_version"] = "wellness-heuristic-v2"
     result["data_source"] = "fitbit_live"
     result["last_synced"] = datetime.now().isoformat(timespec="seconds")
     return result
@@ -583,7 +620,7 @@ def generate_sample_dashboard(chronological_age: float = 33.0, manual_lean_pct: 
         "sleep": sleep,
         "cardioscore": cardioscore,
         "activities": activities,
-        "body_fat": [{"date": today.isoformat(), "fat": round(100.0 - (manual_lean_pct or 81.5), 1)}],
+        "body_fat": [{"date": (today - timedelta(days=1)).isoformat(), "fat": round(100.0 - (manual_lean_pct or 81.5), 1)}],
     }
     res = compute_from_fitbit_raw(raw, chronological_age, manual_lean_pct)
     res["data_source"] = "sample_preview"

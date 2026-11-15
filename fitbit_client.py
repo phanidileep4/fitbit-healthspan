@@ -11,13 +11,19 @@ import base64
 import hashlib
 import json
 import os
+import math
+from concurrent.futures import ThreadPoolExecutor
+from threading import local
 import secrets
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional, Tuple
+
+_REQUEST_CONTEXT = local()
 
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -47,6 +53,7 @@ def get_config(st: Dict[str, Any]) -> Dict[str, Any]:
         "manual_lean_pct": st.get("manual_lean_pct"),
         "user_name": st.get("profile_name", ""),
         "last_synced": st.get("last_synced"),
+        "cache_id": st.get("cache_id"),
     }
 
 
@@ -62,9 +69,15 @@ def update_config(
     if client_secret is not None:
         st["client_secret"] = client_secret.strip()
     if chronological_age is not None:
-        st["chronological_age"] = float(chronological_age)
+        age = float(chronological_age)
+        if not math.isfinite(age) or not 18 <= age <= 100:
+            raise ValueError("Age must be between 18 and 100.")
+        st["chronological_age"] = age
     if manual_lean_pct is not None:
-        st["manual_lean_pct"] = float(manual_lean_pct) if manual_lean_pct > 0 else None
+        lean = float(manual_lean_pct)
+        if not math.isfinite(lean) or (lean != 0 and not 40 <= lean <= 95):
+            raise ValueError("Lean mass must be between 40 and 95%, or blank.")
+        st["manual_lean_pct"] = lean if lean else None
     return st
 
 
@@ -90,9 +103,11 @@ def build_auth_url(st: Dict[str, Any], client_id: str, client_secret: str, redir
     code_challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
     oauth_state = secrets.token_urlsafe(24)
 
+    st["cache_id"] = secrets.token_urlsafe(12)
     st["pkce"] = {
         "code_verifier": code_verifier,
         "state": oauth_state,
+        "created_at": time.time(),
         "redirect_uri": redirect_uri,
     }
 
@@ -118,13 +133,12 @@ def _post_token(form_data: Dict[str, str]) -> Dict[str, Any]:
         with urllib.request.urlopen(req, timeout=20) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
-        err_body = e.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"Google OAuth token error ({e.code}): {err_body}") from e
+        raise RuntimeError(f"Google authorization failed (HTTP {e.code}). Please reconnect.") from e
 
 
 def exchange_code(st: Dict[str, Any], code: str, returned_state: str, fallback_redirect_uri: str) -> Dict[str, Any]:
     pkce = st.get("pkce", {})
-    if not pkce or pkce.get("state") != returned_state:
+    if not code or not pkce or not secrets.compare_digest(pkce.get("state", ""), returned_state) or time.time() - pkce.get("created_at", 0) > 600:
         raise RuntimeError("OAuth state mismatch. Please restart the Google Health connection flow.")
 
     client_id, client_secret = _effective_credentials(st)
@@ -186,193 +200,177 @@ def _api_request(method: str, path: str, token: str, body: Optional[Dict[str, An
         headers["Content-Type"] = "application/json"
 
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    remaining = getattr(_REQUEST_CONTEXT, "deadline", time.monotonic() + 12) - time.monotonic()
+    if remaining <= 0:
+        raise RuntimeError("Sync time budget exceeded; retry sync.")
     try:
-        with urllib.request.urlopen(req, timeout=25) as resp:
+        with urllib.request.urlopen(req, timeout=min(12, remaining)) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
-        err_body = e.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"Google Health API {path} failed ({e.code}): {err_body}") from e
+        raise RuntimeError(f"Google Health request failed (HTTP {e.code})." ) from e
 
 
-def _safe_get_paginated(path: str, token: str, max_pages: int = 8) -> List[Dict[str, Any]]:
-    items: List[Dict[str, Any]] = []
-    page_token: Optional[str] = None
-    for _ in range(max_pages):
-        sep = "&" if "?" in path else "?"
-        full_path = f"{path}{sep}pageToken={urllib.parse.quote(page_token)}" if page_token else path
-        try:
-            resp = _api_request("GET", full_path, token)
-        except RuntimeError:
-            break
-        pts = resp.get("dataPoints") or resp.get("items") or []
-        items.extend(pts)
-        page_token = resp.get("nextPageToken")
-        if not page_token:
-            break
-    return items
-
-
-def _daily_rollup(data_type: str, start_dt: datetime, end_dt: datetime, token: str) -> List[Dict[str, Any]]:
-    body = {
-        "range": {
-            "start": {
-                "date": {"year": start_dt.year, "month": start_dt.month, "day": start_dt.day},
-                "time": {"hours": 0, "minutes": 0, "seconds": 0, "nanos": 0},
-            },
-            "end": {
-                "date": {"year": end_dt.year, "month": end_dt.month, "day": end_dt.day},
-                "time": {"hours": 23, "minutes": 59, "seconds": 59, "nanos": 0},
-            },
-        },
-        "windowSizeDays": 1,
-    }
+def _date_string(value: Dict[str, Any]) -> str:
     try:
-        resp = _api_request("POST", f"/users/me/dataTypes/{data_type}/dataPoints:dailyRollUp", token, body)
-        return resp.get("rollupDataPoints") or resp.get("dataPoints") or []
-    except RuntimeError:
-        return []
+        return datetime(int(value["year"]), int(value["month"]), int(value["day"])).date().isoformat()
+    except (KeyError, TypeError, ValueError):
+        return ""
+
+
+def _local_time(interval: Dict[str, Any], end: bool = False) -> str:
+    prefix = "end" if end else "start"
+    stamp = interval.get(prefix + "Time")
+    if not stamp:
+        return ""
+    dt = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    offset = interval.get(prefix + "UtcOffset")
+    if offset is not None:
+        dt = dt.astimezone(timezone(timedelta(seconds=float(offset.rstrip("s")))))
+    return dt.isoformat()
 
 
 def _extract_date(dp: Dict[str, Any]) -> str:
-    for key in ("startTime", "sampleTime", "dateTime"):
-        if isinstance(dp.get(key), str) and len(dp[key]) >= 10:
-            return dp[key][:10]
-    for container in ("window", "range", "interval"):
-        sub = dp.get(container, {})
-        st = sub.get("start") or sub.get("startTime")
-        if isinstance(st, str) and len(st) >= 10:
-            return st[:10]
-        if isinstance(st, dict) and "date" in st:
-            d = st["date"]
-            return f"{d['year']:04d}-{d['month']:02d}-{d['day']:02d}"
+    civil = dp.get("civilStartTime", {})
+    if civil:
+        return _date_string(civil.get("date", {}))
+    for key in ("dailyRestingHeartRate", "dailyVo2Max"):
+        if key in dp:
+            return _date_string(dp[key].get("date", {}))
+    for key in ("bodyFat", "vo2Max"):
+        sample = dp.get(key, {}).get("sampleTime", {})
+        if sample:
+            civil = sample.get("civilTime", {})
+            if civil:
+                return _date_string(civil.get("date", {}))
+            return _local_time({"startTime": sample.get("physicalTime"), "startUtcOffset": sample.get("utcOffset")})[:10]
     return ""
 
 
+def _list_points(data_type: str, field: str, start: str, end: str, token: str) -> List[Dict[str, Any]]:
+    params = {"pageSize": 25 if data_type in ("sleep", "exercise") else 1000,
+              "filter": f'{field} >= "{start}" AND {field} < "{end}"'}
+    items = []
+    for _ in range(30):
+        path = f"/users/me/dataTypes/{data_type}/dataPoints?{urllib.parse.urlencode(params)}"
+        resp = _api_request("GET", path, token)
+        items.extend(resp.get("dataPoints", []))
+        if not resp.get("nextPageToken"):
+            return items
+        params["pageToken"] = resp["nextPageToken"]
+    raise RuntimeError("Too many pages; the requested history could not be fully retrieved.")
+
+
+def _daily_rollup(data_type: str, start: datetime, end: datetime, token: str) -> List[Dict[str, Any]]:
+    items = []
+    cursor = start
+    while cursor < end:
+        stop = min(cursor + timedelta(days=90), end)
+        def civil(dt):
+            return {"date": {"year": dt.year, "month": dt.month, "day": dt.day}}
+        body = {"range": {"start": civil(cursor), "end": civil(stop)}, "windowSizeDays": 1, "pageSize": 90}
+        for _ in range(5):
+            resp = _api_request("POST", f"/users/me/dataTypes/{data_type}/dataPoints:dailyRollUp", token, body)
+            items.extend(resp.get("rollupDataPoints", []))
+            if not resp.get("nextPageToken"):
+                break
+            body["pageToken"] = resp["nextPageToken"]
+        else:
+            raise RuntimeError("Daily rollup pagination did not finish.")
+        cursor = stop
+    return items
+
+
 def sync_fitbit_data(st: Dict[str, Any]) -> Tuple[Dict[str, Any], float, Dict[str, Any]]:
-    """
-    Fetch up to 180 days of data from Google Health API v4 and normalize into
-    the Healthspan engine's internal format.
-    """
     token, st = _get_valid_access_token(st)
-    now = datetime.now(timezone.utc)
-    today = now.date()
-    start_180 = today - timedelta(days=179)
-    mid_90 = today - timedelta(days=90)
+    now = datetime.now(ZoneInfo(st.get("timezone", "America/Chicago")))
+    end = now.date()
+    start = end - timedelta(days=180)
+    begin, finish = start.isoformat(), end.isoformat()
+    diagnostics = []
 
-    try:
-        prof = _api_request("GET", "/users/me/profile", token)
-        if prof.get("displayName"):
-            st["profile_name"] = prof["displayName"]
-        if prof.get("age"):
-            st["chronological_age"] = float(prof["age"])
-    except RuntimeError:
-        pass
-    chrono_age = float(st.get("chronological_age", 33.0))
+    def fetch_metric(name, fn):
+        _REQUEST_CONTEXT.deadline = deadline
+        try:
+            points = fn()
+            return points, {"metric": name, "status": "ok" if points else "empty", "records": len(points)}
+        except (RuntimeError, urllib.error.URLError, TimeoutError, ValueError) as exc:
+            return None, {"metric": name, "status": "error", "records": 0,
+                          "message": str(exc) if isinstance(exc, RuntimeError) else "Request failed. Retry sync."}
 
-    steps_raw: List[Dict[str, Any]] = []
-    for s_d, e_d in [(start_180, mid_90), (mid_90 + timedelta(days=1), today)]:
-        for rp in _daily_rollup("steps", datetime.combine(s_d, datetime.min.time()), datetime.combine(e_d, datetime.min.time()), token):
-            d_str = _extract_date(rp)
-            val = rp.get("steps", {}).get("countSum") or rp.get("countSum") or rp.get("value") or 0
-            if d_str:
-                steps_raw.append({"dateTime": d_str, "value": str(int(val))})
-
-    rhr_pts = _safe_get_paginated("/users/me/dataTypes/daily-resting-heart-rate/dataPoints?pageSize=200", token)
-    zone_pts = _safe_get_paginated("/users/me/dataTypes/time-in-heart-rate-zone/dataPoints?pageSize=200", token)
-
-    heart_by_day: Dict[str, Dict[str, Any]] = {}
-    for pt in rhr_pts:
-        d_str = _extract_date(pt)
-        rhr_val = (
-            pt.get("dailyRestingHeartRate", {}).get("beatsPerMinute")
-            or pt.get("beatsPerMinute")
-            or pt.get("value")
-        )
-        if d_str and rhr_val is not None:
-            heart_by_day.setdefault(d_str, {"dateTime": d_str, "value": {"heartRateZones": []}})
-            heart_by_day[d_str]["value"]["restingHeartRate"] = float(rhr_val)
-
-    for pt in zone_pts:
-        d_str = _extract_date(pt)
-        if not d_str:
-            continue
-        z_obj = pt.get("timeInHeartRateZone", pt)
-        z_type = str(z_obj.get("heartRateZoneType", "")).lower()
-        secs = float(z_obj.get("durationSeconds", 0) or 0)
-        mins = secs / 60.0
-        entry = heart_by_day.setdefault(d_str, {"dateTime": d_str, "value": {"heartRateZones": []}})
-        zone_name = "Fat Burn" if ("fat" in z_type or "moderate" in z_type or "light" in z_type) else (
-            "Cardio" if "vigorous" in z_type or "cardio" in z_type else (
-                "Peak" if "peak" in z_type else "Fat Burn"
-            )
-        )
-        entry["value"]["heartRateZones"].append({"name": zone_name, "minutes": mins})
-
-    heart_raw = sorted(heart_by_day.values(), key=lambda x: x["dateTime"])
-
-    sleep_pts = _safe_get_paginated("/users/me/dataTypes/sleep/dataPoints?pageSize=200", token)
-    sleep_raw: List[Dict[str, Any]] = []
-    for pt in sleep_pts:
-        sl = pt.get("sleep", pt)
-        interval = pt.get("interval") or sl.get("interval") or {}
-        st_time = interval.get("startTime") or sl.get("startTime")
-        en_time = interval.get("endTime") or sl.get("endTime")
-        if not st_time or not en_time:
-            continue
-        d_str = en_time[:10]
-        dur_mins = sl.get("minutesAsleep")
-        if dur_mins is None:
-            try:
-                t0 = datetime.fromisoformat(st_time.replace("Z", "+00:00"))
-                t1 = datetime.fromisoformat(en_time.replace("Z", "+00:00"))
-                dur_mins = max(0, int((t1 - t0).total_seconds() / 60.0))
-            except ValueError:
-                dur_mins = 0
-        sleep_raw.append({
-            "dateOfSleep": d_str,
-            "isMainSleep": True,
-            "startTime": st_time,
-            "endTime": en_time,
-            "minutesAsleep": dur_mins,
-        })
-
-    vo2_pts = _safe_get_paginated("/users/me/dataTypes/daily-vo2-max/dataPoints?pageSize=200", token)
-    if not vo2_pts:
-        vo2_pts = _safe_get_paginated("/users/me/dataTypes/vo2-max/dataPoints?pageSize=200", token)
-    cardioscore_raw: List[Dict[str, Any]] = []
-    for pt in vo2_pts:
-        d_str = _extract_date(pt)
-        v = (
-            pt.get("dailyVo2Max", {}).get("vo2Max")
-            or pt.get("vo2Max", {}).get("vo2Max")
-            or pt.get("value")
-        )
-        if d_str and v is not None:
-            cardioscore_raw.append({"dateTime": d_str, "value": {"vo2Max": v}})
-
-    ex_pts = _safe_get_paginated("/users/me/dataTypes/exercise/dataPoints?pageSize=200", token)
-    activities_raw: List[Dict[str, Any]] = []
-    for pt in ex_pts:
-        ex = pt.get("exercise", pt)
-        st_time = (pt.get("interval") or {}).get("startTime") or ex.get("startTime") or ""
-        ex_type = ex.get("exerciseType") or ex.get("displayName") or "Workout"
-        activities_raw.append({"startTime": st_time, "activityName": str(ex_type)})
-
-    fat_pts = _safe_get_paginated("/users/me/dataTypes/body-fat/dataPoints?pageSize=50", token)
-    body_fat_raw: List[Dict[str, Any]] = []
-    for pt in fat_pts:
-        d_str = _extract_date(pt)
-        pct = pt.get("bodyFat", {}).get("percentage") or pt.get("percentage")
-        if d_str and pct is not None:
-            body_fat_raw.append({"date": d_str, "fat": float(pct)})
-
-    raw = {
-        "steps": steps_raw,
-        "heart": heart_raw,
-        "sleep": sleep_raw,
-        "cardioscore": cardioscore_raw,
-        "activities": activities_raw,
-        "body_fat": body_fat_raw,
+    deadline = time.monotonic() + 40
+    jobs = {
+        "steps": lambda: _daily_rollup("steps", datetime.combine(start, datetime.min.time()), datetime.combine(end, datetime.min.time()), token),
+        "zones": lambda: _daily_rollup("time-in-heart-rate-zone", datetime.combine(start, datetime.min.time()), datetime.combine(end, datetime.min.time()), token),
+        "rhr": lambda: _list_points("daily-resting-heart-rate", "daily_resting_heart_rate.date", begin, finish, token),
+        "sleep": lambda: _list_points("sleep", "sleep.interval.civil_end_time", begin, finish, token),
+        "vo2": lambda: _list_points("daily-vo2-max", "daily_vo2_max.date", begin, finish, token),
+        "exercise": lambda: _list_points("exercise", "exercise.interval.civil_start_time", begin, finish, token),
+        "body_fat": lambda: _list_points("body-fat", "body_fat.sample_time.civil_time", begin, finish, token),
+        "profile": lambda: [_api_request("GET", "/users/me/profile", token)],
     }
-    st["last_synced"] = datetime.now().isoformat(timespec="seconds")
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = {name: pool.submit(fetch_metric, name, fn) for name, fn in jobs.items()}
+        results = {}
+        for name, future in futures.items():
+            results[name], diag = future.result()
+            diagnostics.append(diag)
+
+    profile = (results["profile"] or [{}])[0]
+    if profile.get("age") and not st.get("age_override"):
+        st["chronological_age"] = float(profile["age"])
+    chrono_age = float(st.get("chronological_age", 33))
+    raw = {"steps": [], "heart": [], "sleep": [], "cardioscore": [], "activities": [], "body_fat": [],
+           "diagnostics": diagnostics, "as_of": finish}
+    for point in results["steps"] or []:
+        if "steps" in point and "countSum" in point["steps"]:
+            raw["steps"].append({"dateTime": _extract_date(point), "value": point["steps"]["countSum"]})
+    heart = {}
+    for point in results["rhr"] or []:
+        day = _extract_date(point)
+        val = point.get("dailyRestingHeartRate", {}).get("beatsPerMinute")
+        if day and val is not None:
+            heart.setdefault(day, {"dateTime": day, "value": {}})["value"]["restingHeartRate"] = float(val)
+    for point in results["zones"] or []:
+        day = _extract_date(point)
+        zones = point.get("timeInHeartRateZone", {}).get("timeInHeartRateZones")
+        if not day or not zones:
+            continue
+        normalized = []
+        for zone in zones:
+            name = {"MODERATE": "Fat Burn", "VIGOROUS": "Cardio", "PEAK": "Peak"}.get(zone.get("heartRateZone"))
+            if name:
+                normalized.append({"name": name, "minutes": float(zone.get("duration", "0s").rstrip("s")) / 60})
+        if normalized:
+            heart.setdefault(day, {"dateTime": day, "value": {}})["value"]["heartRateZones"] = normalized
+    raw["heart"] = sorted(heart.values(), key=lambda row: row["dateTime"])
+    for point in results["sleep"] or []:
+        sleep = point.get("sleep", {})
+        meta = sleep.get("metadata", {})
+        if meta.get("nap") or meta.get("mainSleep") is False or meta.get("processed") is False:
+            continue
+        interval = sleep.get("interval", {})
+        start_time, end_time = _local_time(interval), _local_time(interval, True)
+        minutes = sleep.get("summary", {}).get("minutesAsleep")
+        # Time in bed must never silently substitute for time asleep.
+        if start_time and end_time and minutes is not None:
+            raw["sleep"].append({"dateOfSleep": end_time[:10], "isMainSleep": True,
+                "startTime": start_time, "endTime": end_time, "minutesAsleep": float(minutes)})
+    for point in results["vo2"] or []:
+        val = point.get("dailyVo2Max", {}).get("vo2Max")
+        if val is not None:
+            raw["cardioscore"].append({"dateTime": _extract_date(point), "value": {"vo2Max": float(val)}})
+    for point in results["exercise"] or []:
+        exercise = point.get("exercise", {})
+        raw["activities"].append({"startTime": _local_time(exercise.get("interval", {})),
+            "activityName": exercise.get("exerciseType", ""), "id": point.get("name", "")})
+    for point in results["body_fat"] or []:
+        val = point.get("bodyFat", {}).get("percentage")
+        if val is not None:
+            raw["body_fat"].append({"date": _extract_date(point), "fat": float(val)})
+    if not any(raw[key] for key in ("steps", "heart", "sleep", "cardioscore", "activities", "body_fat")):
+        raise RuntimeError("No usable health data was retrieved. Check Google permissions and device sync, then retry.")
+    for key in ("steps", "heart", "sleep", "cardioscore", "activities", "body_fat"):
+        day_key = {"sleep": "dateOfSleep", "activities": "startTime", "body_fat": "date"}.get(key, "dateTime")
+        raw[key].sort(key=lambda row: row.get(day_key, ""))
+    st["last_synced"] = now.isoformat(timespec="seconds")
     return raw, chrono_age, st
