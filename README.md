@@ -67,3 +67,15 @@ Tests use schema-shaped fixtures and do not require real health data or credenti
 3. A methodology page with sourced, age/sex-appropriate reference ranges; scientifically evaluate or replace the age/pace heuristic.
 4. User-selected goals and measured progress, optional exports, and clearly attributed manual measurements.
 5. Accessibility improvements to modal focus management and charts, plus broader automated browser coverage.
+
+## Guidance, goals, and real history
+
+The per-pillar comparison panel links to NIH, CDC, AHA, or Google guidance and displays a 30-day observation calendar and freshness. References are separate from the experimental scoring coefficients. There are no universal healthy lean-mass or VO₂ thresholds; the API's fitness classification is shown when provided. The methodology page documents these limits. Moderate and vigorous targets are alternatives; the goal panel combines moderate + 2 × vigorous minutes only when both components have matching coverage. Strength goals use distinct logged training days.
+
+Lean mass uses 100 minus recorded body fat. The optional manual input is an undated fallback for windows without body-fat records, not an automatic wrist measurement. Cards identify baseline/recent sources separately.
+
+Snapshot history is explicitly opt-in, account scoped when a canonical Google profile identifier is available (OAuth-session scoped otherwise), and limited to 180 entries in browser localStorage. Only actual successful live syncs are saved. Same-day syncs replace the day's snapshot for the same model. Comparisons require matching model, settings, active pillars and sources, with baseline-day counts within 10% (minimum tolerance 2 days) and recent-day counts within 2 days. These are comparison guards, not clinical comparability guarantees. Model v3 distinguishes absent zone categories from recorded zeros.
+
+Local storage is not encrypted at rest. Disabling snapshot saving stops new writes; Clear saved history and Disconnect delete current-account snapshots. Goals are saved explicitly and remain until site data is cleared. JSON/CSV exports omit OAuth credentials and identify sample previews. CSV cells are escaped against formula injection.
+
+Additional verification: `node tests/test_browser_logic.cjs`.

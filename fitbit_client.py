@@ -54,6 +54,7 @@ def get_config(st: Dict[str, Any]) -> Dict[str, Any]:
         "user_name": st.get("profile_name", ""),
         "last_synced": st.get("last_synced"),
         "cache_id": st.get("cache_id"),
+        "history_id": st.get("history_id", st.get("cache_id")),
     }
 
 
@@ -318,6 +319,9 @@ def sync_fitbit_data(st: Dict[str, Any]) -> Tuple[Dict[str, Any], float, Dict[st
     profile = (results["profile"] or [{}])[0]
     if profile.get("age") and not st.get("age_override"):
         st["chronological_age"] = float(profile["age"])
+    profile_name = profile.get("name", "")
+    if profile_name.startswith("users/") and profile_name.endswith("/profile") and profile_name.split("/")[1] != "me":
+        st["history_id"] = hashlib.sha256(("healthspan-history:" + profile_name).encode()).hexdigest()[:32]
     chrono_age = float(st.get("chronological_age", 33))
     raw = {"steps": [], "heart": [], "sleep": [], "cardioscore": [], "activities": [], "body_fat": [],
            "diagnostics": diagnostics, "as_of": finish}
@@ -358,7 +362,7 @@ def sync_fitbit_data(st: Dict[str, Any]) -> Tuple[Dict[str, Any], float, Dict[st
     for point in results["vo2"] or []:
         val = point.get("dailyVo2Max", {}).get("vo2Max")
         if val is not None:
-            raw["cardioscore"].append({"dateTime": _extract_date(point), "value": {"vo2Max": float(val)}})
+            raw["cardioscore"].append({"dateTime": _extract_date(point), "value": {"vo2Max": float(val)}, "fitness_level": point.get("dailyVo2Max", {}).get("cardioFitnessLevel")})
     for point in results["exercise"] or []:
         exercise = point.get("exercise", {})
         raw["activities"].append({"startTime": _local_time(exercise.get("interval", {})),

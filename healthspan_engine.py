@@ -11,6 +11,7 @@ from __future__ import annotations
 import math
 import random
 import statistics
+from insights import enrich_dashboard
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
@@ -423,10 +424,12 @@ def compute_from_fitbit_raw(raw_data: Dict[str, Any], chronological_age: float, 
                     day_z13 += mins
                 elif "cardio" in name or "peak" in name:
                     day_z45 += mins
-            z13_days.append(day_z13)
-            z45_days.append(day_z45)
-            z13_series.append({"date": d, "value": round(day_z13)})
-            z45_series.append({"date": d, "value": round(day_z45)})
+            if any("fat burn" in z.get("name", "").lower() for z in zones):
+                z13_days.append(day_z13)
+                z13_series.append({"date": d, "value": round(day_z13)})
+            if any(z.get("name", "").lower() in ("cardio", "peak") for z in zones):
+                z45_days.append(day_z45)
+                z45_series.append({"date": d, "value": round(day_z45)})
 
         weekly_z13 = (sum(z13_days) / len(z13_days)) * 7.0 if z13_days else None
         weekly_z45 = (sum(z45_days) / len(z45_days)) * 7.0 if z45_days else None
@@ -551,10 +554,10 @@ def compute_from_fitbit_raw(raw_data: Dict[str, Any], chronological_age: float, 
         "Overall estimates need at least 6 pillars; daily metrics need 14 recorded days.")
     result["diagnostics"] = raw_data.get("diagnostics", [])
     result["window"] = {"start": cutoff_180, "end_exclusive": today.isoformat(), "recent_start": cutoff_30}
-    result["model_version"] = "wellness-heuristic-v2"
+    result["model_version"] = "wellness-heuristic-v3"
     result["data_source"] = "fitbit_live"
     result["last_synced"] = datetime.now().isoformat(timespec="seconds")
-    return result
+    return enrich_dashboard(result, raw_data, manual_lean_pct)
 
 
 def generate_sample_dashboard(chronological_age: float = 33.0, manual_lean_pct: Optional[float] = None) -> Dict[str, Any]:
